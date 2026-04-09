@@ -1,4 +1,13 @@
-import { normalizeAuthorArray, normalizeDate, normalizeIsbn, normalizeLanguage, normalizePageCount, normalizePublisher, normalizeTitle, stripPunctuation } from './normalize'
+import {
+  normalizeAuthorArray,
+  normalizeDate,
+  normalizeIsbn,
+  normalizeLanguage,
+  normalizePageCount,
+  normalizePublisher,
+  normalizeTitle,
+  stripPunctuation,
+} from './normalize'
 import type {
   BookCandidate,
   CatalogEdition,
@@ -16,32 +25,69 @@ function first<T>(values?: T[]): T | undefined {
   return values?.find(Boolean)
 }
 
-function candidateCodes(c: BookCandidate): { isbn10?: string; isbn13?: string; editionId?: string; sourceIdentity?: string } {
+function unique<T>(values: T[]): T[] {
+  return Array.from(new Set(values))
+}
+
+function candidateCodes(c: BookCandidate): {
+  isbn10?: string
+  isbn13?: string
+  editionId?: string
+  sourceIdentity?: string
+  retailerIdentity?: string
+} {
+  const isbn10 = first((c.isbn10 || []).map(normalizeIsbn).filter(Boolean) as string[])
+  const isbn13 = first((c.isbn13 || []).map(normalizeIsbn).filter(Boolean) as string[])
+  const editionId = c.source === 'openlibrary' ? c.source_edition_id || undefined : c.source_edition_id || undefined
+  const sourceIdentity = c.source_edition_id ? `${c.source}:${c.source_edition_id}` : undefined
+
+  const retailerIdentity =
+    RETAILER_SET.has(c.source) && (c.source_edition_id || c.source_url)
+      ? `${c.source}:${c.source_edition_id || c.source_url}`
+      : undefined
+
   return {
-    isbn10: first(c.isbn10?.map(normalizeIsbn).filter(Boolean) as string[]),
-    isbn13: first(c.isbn13?.map(normalizeIsbn).filter(Boolean) as string[]),
-    editionId: c.source === 'openlibrary' ? c.source_edition_id : c.source_edition_id || undefined,
-    sourceIdentity: c.source_edition_id ? `${c.source}:${c.source_edition_id}` : undefined,
+    isbn10,
+    isbn13,
+    editionId,
+    sourceIdentity,
+    retailerIdentity,
   }
+}
+
+function sameLanguage(a: BookCandidate, b: BookCandidate): boolean {
+  const langA = normalizeLanguage(first(a.languages))
+  const langB = normalizeLanguage(first(b.languages))
+  if (langA === 'unknown' || langB === 'unknown') return true
+  return langA === langB
 }
 
 function conflictPenalty(a: BookCandidate, b: BookCandidate): string[] {
   const conflicts: string[] = []
+
   const langA = normalizeLanguage(first(a.languages))
   const langB = normalizeLanguage(first(b.languages))
-  if (langA !== 'unknown' && langB !== 'unknown' && langA !== langB) conflicts.push('language_conflict')
+  if (langA !== 'unknown' && langB !== 'unknown' && langA !== langB) {
+    conflicts.push('language_conflict')
+  }
 
   const pubA = normalizePublisher(first(a.publishers))
   const pubB = normalizePublisher(first(b.publishers))
-  if (pubA && pubB && pubA !== pubB) conflicts.push('publisher_conflict')
+  if (pubA && pubB && pubA !== pubB) {
+    conflicts.push('publisher_conflict')
+  }
 
   const yearA = Number(normalizeDate(a.publish_date)?.slice(0, 4) || a.publish_year || 0)
   const yearB = Number(normalizeDate(b.publish_date)?.slice(0, 4) || b.publish_year || 0)
-  if (yearA && yearB && Math.abs(yearA - yearB) >= 2) conflicts.push('year_conflict')
+  if (yearA && yearB && Math.abs(yearA - yearB) >= 2) {
+    conflicts.push('year_conflict')
+  }
 
   const pagesA = normalizePageCount(a.page_count)
   const pagesB = normalizePageCount(b.page_count)
-  if (pagesA && pagesB && Math.abs(pagesA - pagesB) >= 20) conflicts.push('page_count_conflict')
+  if (pagesA && pagesB && Math.abs(pagesA - pagesB) >= 20) {
+    conflicts.push('page_count_conflict')
+  }
 
   return conflicts
 }
@@ -60,7 +106,15 @@ function titleMatch(a: BookCandidate, b: BookCandidate): boolean {
   return at.normalized === bt.normalized || Boolean(at.withoutSubtitle && at.withoutSubtitle === bt.withoutSubtitle)
 }
 
-function classifyMerge(a: BookCandidate, b: BookCandidate): { allow: boolean; confidence: number; reasons: string[]; blocked: string[] } {
+function hasAnyStrongCode(c: BookCandidate): boolean {
+  const codes = candidateCodes(c)
+  return Boolean(codes.isbn10 || codes.isbn13 || codes.editionId || codes.sourceIdentity || codes.retailerIdentity)
+}
+
+function classifyMerge(
+  a: BookCandidate,
+  b: BookCandidate
+): { allow: boolean; confidence: number; reasons: string[]; blocked: string[] } {
   const reasons: string[] = []
   const blocked = conflictPenalty(a, b)
   const aCodes = candidateCodes(a)
@@ -70,38 +124,72 @@ function classifyMerge(a: BookCandidate, b: BookCandidate): { allow: boolean; co
     reasons.push('isbn13_exact')
     return { allow: blocked.length === 0, confidence: 1, reasons, blocked }
   }
+
   if (aCodes.isbn10 && bCodes.isbn10 && aCodes.isbn10 === bCodes.isbn10) {
     reasons.push('isbn10_exact')
-    return { allow: blocked.length === 0, confidence: 0.98, reasons, blocked }
+    return { allow: blocked.length === 0, confidence: 0.99, reasons, blocked }
   }
-  if (a.source === 'openlibrary' && b.source === 'openlibrary' && aCodes.editionId && aCodes.editionId === bCodes.editionId) {
+
+  if (
+    a.source === 'openlibrary' &&
+    b.source === 'openlibrary' &&
+    aCodes.editionId &&
+    bCodes.editionId &&
+    aCodes.editionId === bCodes.editionId
+  ) {
     reasons.push('openlibrary_edition_exact')
-    return { allow: blocked.length === 0, confidence: 0.96, reasons, blocked }
+    return { allow: blocked.length === 0, confidence: 0.97, reasons, blocked }
   }
+
   if (aCodes.sourceIdentity && bCodes.sourceIdentity && aCodes.sourceIdentity === bCodes.sourceIdentity) {
     reasons.push('source_identity_exact')
-    return { allow: blocked.length === 0, confidence: 0.95, reasons, blocked }
+    return { allow: blocked.length === 0, confidence: 0.96, reasons, blocked }
   }
 
-  const hasCodes = Boolean(aCodes.isbn10 || aCodes.isbn13 || bCodes.isbn10 || bCodes.isbn13 || aCodes.editionId || bCodes.editionId)
+  if (aCodes.retailerIdentity && bCodes.retailerIdentity && aCodes.retailerIdentity === bCodes.retailerIdentity) {
+    reasons.push('retailer_identity_exact')
+    return { allow: blocked.length === 0, confidence: 0.96, reasons, blocked }
+  }
+
+  const hasCodes = hasAnyStrongCode(a) || hasAnyStrongCode(b)
   if (hasCodes) {
-    return { allow: false, confidence: 0, reasons: [], blocked: ['coded_identity_mismatch', ...blocked] }
+    return {
+      allow: false,
+      confidence: 0,
+      reasons: [],
+      blocked: unique(['coded_identity_mismatch', ...blocked]),
+    }
   }
 
-  const sameLang = normalizeLanguage(first(a.languages)) === normalizeLanguage(first(b.languages))
   const fuzzyTitle = titleMatch(a, b)
   const fuzzyAuthor = authorMatch(a, b)
-  if (sameLang && fuzzyTitle && fuzzyAuthor >= 0.95 && blocked.length === 0) {
-    reasons.push('fuzzy_title_author_strict')
+
+  if (!sameLanguage(a, b)) {
+    return {
+      allow: false,
+      confidence: 0,
+      reasons: [],
+      blocked: unique(['language_conflict', ...blocked]),
+    }
+  }
+
+  if (fuzzyTitle && fuzzyAuthor >= 0.98 && blocked.length === 0) {
+    reasons.push('fuzzy_title_author_strict_no_codes')
     return { allow: true, confidence: 0.9, reasons, blocked }
   }
 
-  return { allow: false, confidence: 0, reasons, blocked: [...blocked, 'fuzzy_not_high_enough'] }
+  return {
+    allow: false,
+    confidence: 0,
+    reasons: [],
+    blocked: unique([...blocked, 'fuzzy_not_high_enough']),
+  }
 }
 
 function selectBestCover(candidates: BookCandidate[]): string | undefined {
   const urls = candidates.flatMap((item) => [item.cover_url, ...(item.cover_urls || [])]).filter(Boolean) as string[]
   if (!urls.length) return undefined
+
   return urls.sort((a, b) => {
     const score = (url: string) => {
       const m = url.match(/(?:[?&](?:w|width|h|height)=)(\d+)|\b([0-9]{3,4})\.(?:jpg|jpeg|png)/i)
@@ -116,11 +204,14 @@ function enrichPrimary(primary: BookCandidate, editions: BookCandidate[], langua
     language === 'he'
       ? ['steimatzky', 'booknet', 'indiebook', 'simania', 'google', 'openlibrary']
       : ['amazon', 'google', 'openlibrary', 'steimatzky', 'booknet', 'indiebook', 'simania']
+
   const priorityIndex = (source: string) => {
     const idx = priority.indexOf(source)
     return idx === -1 ? 999 : idx
   }
+
   const ordered = [...editions].sort((a, b) => priorityIndex(a.source) - priorityIndex(b.source))
+
   const pick = <T>(selector: (item: BookCandidate) => T | undefined, current?: T): T | undefined => {
     if (current !== undefined && current !== null && (!(Array.isArray(current)) || current.length > 0)) return current
     for (const candidate of ordered) {
@@ -131,11 +222,12 @@ function enrichPrimary(primary: BookCandidate, editions: BookCandidate[], langua
   }
 
   const bestCover = selectBestCover(ordered)
+
   return {
     ...primary,
     title: pick((c) => c.title, primary.title) || primary.title,
     authors: pick((c) => (c.authors?.length ? c.authors : undefined), primary.authors) || primary.authors,
-    description: language === 'en' ? pick((c) => c.description, primary.description) : pick((c) => c.description, primary.description),
+    description: pick((c) => c.description, primary.description) || primary.description,
     subjects: pick((c) => (c.subjects?.length ? c.subjects : undefined), primary.subjects) || primary.subjects,
     isbn10: pick((c) => (c.isbn10?.length ? c.isbn10 : undefined), primary.isbn10) || primary.isbn10,
     isbn13: pick((c) => (c.isbn13?.length ? c.isbn13 : undefined), primary.isbn13) || primary.isbn13,
@@ -160,10 +252,24 @@ function choosePrimary(editions: BookCandidate[], query: QueryPlan): BookCandida
 }
 
 function editionUniqKey(candidate: BookCandidate): string {
-  const id = candidate.source_edition_id || ''
-  const isbn13 = first(candidate.isbn13) || ''
-  const isbn10 = first(candidate.isbn10) || ''
-  return [candidate.source, id, isbn13 || isbn10, normalizeLanguage(first(candidate.languages)), normalizeTitle(candidate.title).withoutSubtitle].join('::')
+  const codes = candidateCodes(candidate)
+
+  if (codes.isbn13) return `isbn13::${codes.isbn13}`
+  if (codes.isbn10) return `isbn10::${codes.isbn10}`
+  if (codes.editionId) return `edition::${candidate.source}::${codes.editionId}`
+  if (codes.retailerIdentity) return `retailer::${codes.retailerIdentity}`
+  if (codes.sourceIdentity) return `source::${codes.sourceIdentity}`
+
+  return [
+    'fuzzy',
+    candidate.source,
+    normalizeLanguage(first(candidate.languages)),
+    normalizeTitle(candidate.title).withoutSubtitle,
+    normalizeAuthorArray(candidate.authors || [])[0] || '',
+    normalizePublisher(first(candidate.publishers)),
+    normalizeDate(candidate.publish_date) || String(candidate.publish_year || ''),
+    String(normalizePageCount(candidate.page_count) || ''),
+  ].join('::')
 }
 
 function toEditionRecord(candidate: BookCandidate, workId: string): CatalogEdition {
@@ -193,7 +299,9 @@ function toWork(primary: BookCandidate, editions: BookCandidate[], canonicalKey:
     display_authors: primary.authors,
     language: primary.languages?.[0],
     subjects: Array.from(new Set(editions.flatMap((item) => item.subjects || []))).slice(0, 30),
-    description: [(primary.description || ''), ...editions.map((item) => item.description || '')].sort((a, b) => b.length - a.length)[0] || undefined,
+    description:
+      [(primary.description || ''), ...editions.map((item) => item.description || '')]
+        .sort((a, b) => b.length - a.length)[0] || undefined,
     cover: selectBestCover(editions),
     source_confidence: confidence,
     source_badges: Array.from(new Set(editions.map((item) => item.source))),
@@ -217,12 +325,13 @@ export function mergeCandidates(
     for (let i = 0; i < clusters.length; i += 1) {
       const representative = clusters[i][0]
       const check = classifyMerge(candidate, representative)
+
       if (check.allow && check.confidence > bestConfidence) {
         bestIdx = i
         bestConfidence = check.confidence
         bestReasons = check.reasons
-      } else if (!check.allow && check.blocked.length > 0 && i === 0) {
-        bestBlocked = check.blocked
+      } else if (!check.allow && check.blocked.length > 0) {
+        bestBlocked = [...bestBlocked, ...check.blocked]
       }
     }
 
@@ -244,7 +353,7 @@ export function mergeCandidates(
           merge_confidence: 0,
           merge_reasons: ['merge_rejected'],
           representative_candidate_id: `${candidate.source}:${candidate.source_edition_id || candidate.title_key}`,
-          excluded_candidate_ids: bestBlocked,
+          excluded_candidate_ids: unique(bestBlocked),
         })
       }
       clusters.push([candidate])
@@ -254,8 +363,14 @@ export function mergeCandidates(
   const groupedResults: GroupedBookResult[] = clusters.map((cluster, idx) => {
     const selectedPrimary = choosePrimary(cluster, query)
     const primary = enrichPrimary(selectedPrimary, cluster, query.language_guess)
+
     const lang = normalizeLanguage(first(primary.languages))
-    const canonical = first(primary.isbn13) || first(primary.isbn10) || primary.source_edition_id || `${primary.title_key}::${primary.author_key}::${lang}`
+    const canonical =
+      first(primary.isbn13) ||
+      first(primary.isbn10) ||
+      primary.source_edition_id ||
+      `${primary.title_key}::${primary.author_key}::${lang}`
+
     const canonical_work_key = `edition:${canonical}`
 
     const byEdition = new Map<string, BookCandidate>()
@@ -275,14 +390,23 @@ export function mergeCandidates(
       best_authors: work.display_authors,
       best_description: work.description,
       best_cover_url: work.cover,
-      all_cover_urls: Array.from(new Set(cluster.flatMap((item) => [item.cover_url, ...(item.cover_urls || [])].filter(Boolean) as string[]))),
-      languages: Array.from(new Set(cluster.flatMap((item) => item.languages || []))),
+      all_cover_urls: unique(
+        cluster.flatMap((item) => [item.cover_url, ...(item.cover_urls || [])].filter(Boolean) as string[])
+      ),
+      languages: unique(cluster.flatMap((item) => item.languages || [])),
       subjects: work.subjects,
-      tags: Array.from(new Set(cluster.flatMap((item) => [...(item.tags || []), ...(item.subjects || [])]))).filter(Boolean),
+      tags: unique(cluster.flatMap((item) => [...(item.tags || []), ...(item.subjects || [])])).filter(Boolean),
       representative_publish_year: primary.publish_year,
       source_summary: work.source_badges,
       editions,
-      retailers: cluster.filter((item) => RETAILER_SET.has(item.source)).map((item) => ({ source: item.source, title: item.title, author: item.authors[0], url: item.source_url })),
+      retailers: cluster
+        .filter((item) => RETAILER_SET.has(item.source))
+        .map((item) => ({
+          source: item.source,
+          title: item.title,
+          author: item.authors[0],
+          url: item.source_url,
+        })),
       confidence_score: confidenceScore,
       warnings: confidenceScore < 0.55 ? ['low_confidence_merge'] : [],
     }
@@ -310,15 +434,26 @@ export function computeGroupScore(group: GroupedBookResult, query: QueryPlan): n
   const publisherBonus = group.primary.publishers?.length ? 18 : 0
   const dateBonus = group.primary.publish_date ? 16 : 0
   const pageBonus = group.primary.page_count ? 16 : 0
-  const languageBonus = (group.grouped_work.languages || []).some((lang) => normalizeLanguage(lang) === query.language_guess) ? 45 : -40
+  const languageBonus =
+    (group.grouped_work.languages || []).some((lang) => normalizeLanguage(lang) === query.language_guess) ? 45 : -40
   const sourceConfidence = group.primary.source_confidence * 90
   const conflictPenalty = group.grouped_work.warnings.includes('low_confidence_merge') ? 40 : 0
 
-  return group.primary.overall_candidate_score + coverBonus + isbnBonus + authorBonus + summaryBonus + publisherBonus + dateBonus + pageBonus + languageBonus + sourceConfidence - conflictPenalty
+  return (
+    group.primary.overall_candidate_score +
+    coverBonus +
+    isbnBonus +
+    authorBonus +
+    summaryBonus +
+    publisherBonus +
+    dateBonus +
+    pageBonus +
+    languageBonus +
+    sourceConfidence -
+    conflictPenalty
+  )
 }
 
 export function shouldCrossLanguageCluster(a: BookCandidate, b: BookCandidate): boolean {
-  return Boolean(first(a.isbn13) && first(b.isbn13) && normalizeIsbn(first(a.isbn13)) === normalizeIsbn(first(b.isbn13))) &&
-    authorMatch(a, b) >= 0.5 &&
-    stripPunctuation(a.title) !== stripPunctuation(b.title)
+  return false
 }
