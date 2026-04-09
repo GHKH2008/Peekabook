@@ -46,7 +46,7 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
     providerTimings[provider.name] = Date.now() - start
   }
 
-  const { groupedResults, decisions } = mergeCandidates(aggregated, options)
+  const { groupedResults, decisions, logs } = mergeCandidates(aggregated, options)
   const rankedPrimary = rankResults(
     groupedResults.map((group) => group.primary),
     query
@@ -76,6 +76,7 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
           providerTimings,
           providerErrors,
           mergeDecisions: decisions,
+          mergeLogs: logs,
           ranking: rankedGroups.map((entry) => ({ id: entry.group_id, score: entry._score, reasons: entry._reasons })),
         }
       : undefined,
