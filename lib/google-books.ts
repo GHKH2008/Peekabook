@@ -183,6 +183,11 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
     englishRecord.isbn13.value ? { type: 'ISBN_13', identifier: englishRecord.isbn13.value } : null,
   ].filter((value): value is { type: string; identifier: string } => Boolean(value))
 
+  const displayTitle = englishRecord.title.value || primary.volumeInfo.title
+  const displayAuthors = englishRecord.authors.value || primary.volumeInfo.authors
+  const displayDescription = englishRecord.summary.value || primary.volumeInfo.description
+  const displayCategories = englishRecord.genres.value || primary.volumeInfo.categories
+
   return {
     ...primary,
     groupId: group.group_id,
@@ -212,11 +217,11 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
     },
     volumeInfo: {
       ...primary.volumeInfo,
-      title: englishRecord.title.value || primary.volumeInfo.title,
+      title: displayTitle,
       series: englishRecord.series.value || primary.volumeInfo.series,
-      authors: englishRecord.authors.value || primary.volumeInfo.authors,
-      description: englishRecord.summary.value || primary.volumeInfo.description,
-      categories: englishRecord.genres.value || primary.volumeInfo.categories,
+      authors: displayAuthors,
+      description: displayDescription,
+      categories: displayCategories,
       industryIdentifiers: allIdentifiers.length ? allIdentifiers : primary.volumeInfo.industryIdentifiers,
       language: englishRecord.language.value || primary.volumeInfo.language,
       imageLinks: englishRecord.cover.value
