@@ -58,6 +58,33 @@ export function testAuthorMiddleInitialFallbackMerge() {
   assert.equal(merged.groupedResults.length, 1)
 }
 
+export function testDifferentSeriesEntriesDoNotMergeOnPrefixTitle() {
+  const a = makeResult({ source: 'google', source_id: 's1', title: 'He Who Fights with Monsters', authors: ['Shirtaloon'] })
+  const b = makeResult({ source: 'google', source_id: 's2', title: 'He Who Fights with Monsters: Hero', authors: ['Shirtaloon'] })
+  const merged = mergeCandidates([a, b])
+  assert.equal(merged.groupedResults.length, 2)
+}
+
+export function testOpenLibraryConflictingWorkIdsCanMergeWhenTitleAuthorExact() {
+  const a = makeResult({
+    source: 'openlibrary',
+    source_id: '/works/OL111W',
+    title: 'Unsouled',
+    authors: ['Will Wight'],
+    raw_source_data: { key: '/works/OL111W' },
+  })
+  const b = makeResult({
+    source: 'openlibrary',
+    source_id: '/works/OL222W',
+    title: 'Unsouled',
+    authors: ['Will L. Wight'],
+    raw_source_data: { key: '/works/OL222W' },
+  })
+
+  const merged = mergeCandidates([a, b])
+  assert.equal(merged.groupedResults.length, 1)
+}
+
 export function testDifferentOpenLibraryWorksDoNotMergeByTitleFallback() {
   const a = makeResult({
     source: 'openlibrary',
@@ -106,6 +133,8 @@ export function runBookSearchTests() {
   testSameTitleDifferentBooksNotMerged()
   testAuthorSpellingVariationMerges()
   testAuthorMiddleInitialFallbackMerge()
+  testDifferentSeriesEntriesDoNotMergeOnPrefixTitle()
+  testOpenLibraryConflictingWorkIdsCanMergeWhenTitleAuthorExact()
   testDifferentOpenLibraryWorksDoNotMergeByTitleFallback()
   testOpenLibraryWorkIdentityPreferredGrouping()
 }

@@ -147,6 +147,18 @@ function hasConflictingStrongIdentity(a: BookIdentityKeys, b: BookIdentityKeys):
   return blocked
 }
 
+
+function hasAnyIsbn(item: NormalizedBookResult): boolean {
+  const keys = item.identity_keys || extractIdentity(item)
+  return keys.isbns.length > 0
+}
+
+function isbnOverlap(a: NormalizedBookResult, b: NormalizedBookResult): boolean {
+  const left = (a.identity_keys || extractIdentity(a)).isbns
+  const right = (b.identity_keys || extractIdentity(b)).isbns
+  return left.some((isbn) => right.includes(isbn))
+}
+
 function authorSimilarityScore(authorA: string, authorB: string): { score: number; reason?: string } {
   if (!authorA || !authorB) return { score: 0 }
   if (authorA === authorB) return { score: 28, reason: 'author_exact_normalized' }
@@ -180,9 +192,6 @@ function textFallbackScore(a: NormalizedBookResult, b: NormalizedBookResult): { 
   if (titleA && titleB && titleA === titleB) {
     score += 42
     reasons.push('title_exact_normalized')
-  } else if (titleA && titleB && (titleA.includes(titleB) || titleB.includes(titleA))) {
-    score += 26
-    reasons.push('title_contains_normalized')
   }
 
   const authorSimilarity = authorSimilarityScore(authorA, authorB)
@@ -367,25 +376,36 @@ export function mergeCandidates(
       const leadKeys = lead.identity_keys || extractIdentity(lead)
       const candidateKeys = candidate.identity_keys || extractIdentity(candidate)
 
+      const identity = identitiesOverlap(leadKeys, candidateKeys)
+      const text = textFallbackScore(lead, candidate)
+      const matchScore = identity.score + text.score
+      const reasons = [...identity.reasons, ...text.reasons]
+      const dynamicThreshold = identity.score > 0 ? 40 : 50
+
       const blockedBy = hasConflictingStrongIdentity(leadKeys, candidateKeys)
-      if (blockedBy.length > 0) {
+      const canOverrideOpenLibraryConflict =
+        blockedBy.length > 0 &&
+        blockedBy.every((reason) => reason === 'openlibrary_work_conflict') &&
+        lead.source === 'openlibrary' &&
+        candidate.source === 'openlibrary' &&
+        text.score >= 64 &&
+        (!hasAnyIsbn(lead) || !hasAnyIsbn(candidate) || isbnOverlap(lead, candidate))
+
+      if (blockedBy.length > 0 && !canOverrideOpenLibraryConflict) {
         logs.push({
           workKey: buildWorkKey(lead),
           candidateId: `${candidate.source}:${candidate.source_id}`,
           matched: false,
-          score: 0,
-          reasons: [],
+          score: matchScore,
+          reasons,
           blockedBy,
         })
         continue
       }
 
-      const identity = identitiesOverlap(leadKeys, candidateKeys)
-      const text = textFallbackScore(lead, candidate)
-      const matchScore = identity.score + text.score
-      const reasons = [...identity.reasons, ...text.reasons]
-
-      const dynamicThreshold = identity.score > 0 ? 40 : 50
+      if (canOverrideOpenLibraryConflict) {
+        reasons.push('openlibrary_conflict_overridden_by_exact_title_author')
+      }
 
       logs.push({
         workKey: buildWorkKey(lead),

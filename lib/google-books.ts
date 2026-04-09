@@ -1436,8 +1436,15 @@ function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBo
 
 function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
   const primary = mapNormalizedResultToGoogleBook(group.primary)
+  const seenEditionKeys = new Set<string>()
   const editionVariants = group.editions
     .filter((edition) => `${edition.source}:${edition.source_id}` !== `${group.primary.source}:${group.primary.source_id}`)
+    .filter((edition) => {
+      const key = `${edition.source}:${edition.source_id}`
+      if (seenEditionKeys.has(key)) return false
+      seenEditionKeys.add(key)
+      return true
+    })
     .map(mapNormalizedResultToGoogleBook)
 
   const displayTitle = group.work.display_title || primary.volumeInfo.title
