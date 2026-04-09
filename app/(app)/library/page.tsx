@@ -16,26 +16,31 @@ export default async function LibraryPage({
   const user = await getSession()
   if (!user) return null
 
-  let books = await sql`
-    SELECT * FROM books 
+  const normalizedSearch = params.search?.trim() || null
+  const availability = params.availability && params.availability !== 'all' ? params.availability : null
+  const visibility = params.visibility && params.visibility !== 'all' ? params.visibility : null
+
+  const books = await sql`
+    SELECT *
+    FROM books
     WHERE user_id = ${user.id}
+      AND (${availability}::text IS NULL OR availability = ${availability})
+      AND (${visibility}::text IS NULL OR visibility = ${visibility})
+      AND (
+        ${normalizedSearch}::text IS NULL
+        OR title ILIKE ${`%${normalizedSearch}%`}
+        OR EXISTS (
+          SELECT 1 FROM unnest(COALESCE(authors, ARRAY[]::text[])) author
+          WHERE author ILIKE ${`%${normalizedSearch}%`}
+        )
+        OR COALESCE(summary, '') ILIKE ${`%${normalizedSearch}%`}
+        OR COALESCE(publisher, '') ILIKE ${`%${normalizedSearch}%`}
+        OR COALESCE(published_date, '') ILIKE ${`%${normalizedSearch}%`}
+        OR COALESCE(isbn, '') ILIKE ${`%${normalizedSearch}%`}
+        OR COALESCE(isbn_13, '') ILIKE ${`%${normalizedSearch}%`}
+      )
     ORDER BY created_at DESC
   `
-
-  // Apply filters
-  if (params.availability && params.availability !== 'all') {
-    books = books.filter(book => book.availability === params.availability)
-  }
-  if (params.visibility && params.visibility !== 'all') {
-    books = books.filter(book => book.visibility === params.visibility)
-  }
-  if (params.search) {
-    const searchLower = params.search.toLowerCase()
-    books = books.filter(book => 
-      book.title.toLowerCase().includes(searchLower) ||
-      (book.authors && book.authors.some((a: string) => a.toLowerCase().includes(searchLower)))
-    )
-  }
 
   return (
     <div className="space-y-6">
