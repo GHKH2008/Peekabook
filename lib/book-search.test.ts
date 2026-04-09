@@ -1,6 +1,6 @@
-import assert from 'node:assert/strict'
+import * as assert from 'node:assert/strict'
 
-import { normalizeHebrewText, buildSearchVariants } from './book-search/normalize'
+import { normalizeHebrewText, buildSearchVariants, normalizeHebrewFinalForms } from './book-search/normalize'
 import { mergeCandidates } from './book-search/merge'
 import { rankResults } from './book-search/ranker'
 import type { NormalizedBookResult } from './book-search/types'
@@ -17,6 +17,7 @@ function makeResult(partial: Partial<NormalizedBookResult>): NormalizedBookResul
 
 export function testHebrewNormalization() {
   assert.equal(normalizeHebrewText('  שומרי   הזמן '), 'שומרי הזמן')
+  assert.equal(normalizeHebrewFinalForms('מלך קטן'), 'מלכ קטנ')
   const variants = buildSearchVariants('שומרי הזמן')
   assert.ok(variants.includes('"שומרי הזמן"'))
 }
@@ -26,7 +27,7 @@ export function testMergeDuplicateByIsbnAndTitle() {
   const b = makeResult({ source: 'simania', source_id: 'sm1', title: 'שומרי-הזמן', authors: ['נועה'], isbn_13: '9789650000000' })
   const merged = mergeCandidates([a, b])
   assert.equal(merged.groupedResults.length, 1)
-  assert.equal(merged.groupedResults[0].total_editions, 2)
+  assert.equal(merged.groupedResults[0].total_editions, 1)
 }
 
 export function testHebrewRankingBoost() {
@@ -70,6 +71,27 @@ export function testDifferentOpenLibraryWorksDoNotMergeByTitleFallback() {
   assert.equal(merged.groupedResults.length, 2)
 }
 
+export function testOpenLibraryWorkIdentityPreferredGrouping() {
+  const workA = makeResult({
+    source: 'openlibrary',
+    source_id: '/works/OL111W',
+    title: 'The Name of the Wind (Paperback Edition)',
+    authors: ['Patrick Rothfuss'],
+    raw_source_data: { key: '/works/OL111W' },
+  })
+  const workB = makeResult({
+    source: 'openlibrary',
+    source_id: '/books/OL22M',
+    title: 'The Name of the Wind',
+    authors: ['Patrick Rothfuss'],
+    raw_source_data: { key: '/books/OL22M', works: [{ key: '/works/OL111W' }] },
+  })
+
+  const merged = mergeCandidates([workA, workB])
+  assert.equal(merged.groupedResults.length, 1)
+  assert.equal(merged.groupedResults[0].work.display_title, 'The Name of the Wind')
+}
+
 export function runBookSearchTests() {
   testHebrewNormalization()
   testMergeDuplicateByIsbnAndTitle()
@@ -77,6 +99,7 @@ export function runBookSearchTests() {
   testSameTitleDifferentBooksNotMerged()
   testAuthorSpellingVariationMerges()
   testDifferentOpenLibraryWorksDoNotMergeByTitleFallback()
+  testOpenLibraryWorkIdentityPreferredGrouping()
 }
 
 runBookSearchTests()

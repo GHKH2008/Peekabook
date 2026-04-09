@@ -11,6 +11,14 @@ export type SearchDebugInfo = {
   providerErrors: Array<{ provider: BookProviderName; message: string }>
   ranking?: Array<{ id: string; score: number; reasons: string[] }>
   mergeDecisions?: Array<{ kept: string; merged: string; confidence: number; reasons: string[] }>
+  mergeLogs?: Array<{
+    workKey: string
+    candidateId: string
+    matched: boolean
+    score: number
+    reasons: string[]
+    blockedBy?: string[]
+  }>
 }
 
 export type BookIdentityKeys = {
@@ -19,6 +27,47 @@ export type BookIdentityKeys = {
   google_volume_id?: string
   internal_book_code?: string
   isbns: string[]
+}
+
+export type CatalogWork = {
+  canonical_work_id: string
+  normalized_title: string
+  normalized_authors: string[]
+  display_title: string
+  display_authors: string[]
+  language?: string
+  series?: string
+  volume?: string
+  subjects: string[]
+  description?: string
+  cover?: string
+  source_confidence: number
+  source_badges: BookProviderName[]
+}
+
+export type CatalogEdition = {
+  edition_id: string
+  work_id: string
+  edition_title: string
+  publication_date?: string
+  publisher?: string
+  isbn_10?: string
+  isbn_13?: string
+  format?: string
+  page_count?: number
+  language?: string
+  source_ids: Partial<Record<BookProviderName, string>>
+  source_confidence: number
+  raw_payloads: Array<{ source: BookProviderName; payload: unknown }>
+}
+
+export type UserCopy = {
+  owner_user_id: number
+  visibility: 'public' | 'friends' | 'private'
+  availability: 'available' | 'requested' | 'loaned' | 'unavailable'
+  condition?: string
+  notes?: string
+  local_cover_override?: string
 }
 
 export type NormalizedBookResult = {
@@ -38,6 +87,8 @@ export type NormalizedBookResult = {
   cover_image?: string
   thumbnail_image?: string
   format?: string
+  series?: string
+  volume?: string
   price?: number
   currency?: string
   availability?: string
@@ -52,12 +103,16 @@ export type NormalizedBookResult = {
     source_id: string
     fields: string[]
   }>
+  work?: Partial<CatalogWork>
+  edition?: Partial<CatalogEdition>
 }
 
 export type GroupedBookResult = {
   group_id: string
+  work: CatalogWork
   primary: NormalizedBookResult
   editions: NormalizedBookResult[]
+  edition_records: CatalogEdition[]
   total_editions: number
 }
 
