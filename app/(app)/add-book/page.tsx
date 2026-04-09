@@ -86,20 +86,30 @@ export default function AddBookPage() {
   }
 
   async function handleAddBook(book: GoogleBook) {
-    setAddingBookId(book.id)
-    try {
-      const result = await addBookToLibrary(book)
-      if (result.success) {
-        setAddedBooks(prev => new Set([...prev, book.id]))
-      } else {
-        setError(result.error || 'Failed to add book')
-      }
-    } catch {
-      setError('Failed to add book. Please try again.')
-    } finally {
-      setAddingBookId(null)
+  setAddingBookId(book.id)
+  setError(null)
+
+  try {
+    const result = await addBookToLibrary(book)
+
+    if (result.success) {
+      setAddedBooks(prev => new Set([...prev, book.id]))
+    } else {
+      setError(result.error || 'Failed to add book')
     }
+
+  } catch (error) {
+    console.error('Add book failed:', error)
+
+    setError(
+      error instanceof Error
+        ? error.message
+        : 'Failed to add book. Check console.'
+    )
+  } finally {
+    setAddingBookId(null)
   }
+}
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
