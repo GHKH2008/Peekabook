@@ -318,8 +318,8 @@ function choosePreferredSource(sources: BookSourceName[]): BookSourceName | unde
     'nli_catalog',
     'israel_books_catalog',
     'hebrewbooks_catalog',
-    'google',
     'openlibrary',
+    'google',
     'wikidata',
     'wikipedia',
     'gutendex',
@@ -381,7 +381,7 @@ export function mergeBookCluster(books: GoogleBook[], debug?: MergeDebugInfo): G
       pageCount:
         books
           .map((book) => book.volumeInfo.pageCount)
-          .filter((pages): pages is number => Boolean(pages) && pages > 0)
+          .filter((pages): pages is number => typeof pages === 'number' && pages > 0)
           .sort((left, right) => right - left)[0],
       maturityRating:
         books
