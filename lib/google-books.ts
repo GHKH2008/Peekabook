@@ -870,49 +870,54 @@ function getPreferredLanguageHint(book: GoogleBook): string | undefined {
 }
 
 export async function enrichGoogleBook(book: GoogleBook): Promise<GoogleBook> {
-  const queries = Array.from(
-    new Set(
-      [
-        book.volumeInfo.industryIdentifiers?.find((i) => i.type === 'ISBN_13')?.identifier,
-        book.volumeInfo.industryIdentifiers?.find((i) => i.type === 'ISBN_10')?.identifier,
-        `${book.volumeInfo.title} ${book.volumeInfo.authors?.[0] || ''}`.trim(),
-        book.volumeInfo.title,
-      ]
-        .map((value) => String(value || '').trim())
-        .filter(Boolean)
+  try {
+    const queries = Array.from(
+      new Set(
+        [
+          book.volumeInfo.industryIdentifiers?.find((i) => i.type === 'ISBN_13')?.identifier,
+          book.volumeInfo.industryIdentifiers?.find((i) => i.type === 'ISBN_10')?.identifier,
+          `${book.volumeInfo.title} ${book.volumeInfo.authors?.[0] || ''}`.trim(),
+          book.volumeInfo.title,
+        ]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+      )
     )
-  )
 
-  if (queries.length === 0) return book
+    if (queries.length === 0) return book
 
-  const langHint = getPreferredLanguageHint(book)
-  const aggregated = new Map<string, GoogleBook>()
+    const langHint = getPreferredLanguageHint(book)
+    const aggregated = new Map<string, GoogleBook>()
 
-  for (const query of queries.slice(0, 4)) {
-    try {
-      const results = await searchGoogleBooks(query, langHint)
-      for (const result of results) {
-        aggregated.set(result.id, result)
+    for (const query of queries.slice(0, 4)) {
+      try {
+        const results = await searchGoogleBooks(query, langHint)
+        for (const result of results) {
+          aggregated.set(result.id, result)
+        }
+      } catch {
+        // Ignore individual enrichment failures
       }
-    } catch {
-      // Ignore individual enrichment failures
     }
+
+    const compatible = Array.from(aggregated.values())
+      .filter((candidate) => candidate.id !== book.id)
+      .filter((candidate) => areLikelySameBook(book, candidate))
+      .sort((a, b) => {
+        const query = `${book.volumeInfo.title} ${(book.volumeInfo.authors || []).join(' ')}`
+        return scoreBook(b, query, langHint) - scoreBook(a, query, langHint)
+      })
+
+    let enriched = book
+    for (const candidate of compatible) {
+      enriched = mergeBooks(enriched, candidate)
+    }
+
+    return enriched
+  } catch (error) {
+    console.error('Failed to enrich book, returning original data', error)
+    return book
   }
-
-  const compatible = Array.from(aggregated.values())
-    .filter((candidate) => candidate.id !== book.id)
-    .filter((candidate) => areLikelySameBook(book, candidate))
-    .sort((a, b) => {
-      const query = `${book.volumeInfo.title} ${(book.volumeInfo.authors || []).join(' ')}`
-      return scoreBook(b, query, langHint) - scoreBook(a, query, langHint)
-    })
-
-  let enriched = book
-  for (const candidate of compatible) {
-    enriched = mergeBooks(enriched, candidate)
-  }
-
-  return enriched
 }
 
 export async function searchGoogleBooks(
