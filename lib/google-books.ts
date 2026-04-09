@@ -1,3 +1,5 @@
+import { mergeDuplicateBooks, normalizeBookIdentifier, normalizeBookLanguage, normalizeBookText, normalizeHebrewForComparison } from '@/lib/book-merge'
+
 export type BookSourceName =
   | 'google'
   | 'openlibrary'
@@ -12,6 +14,14 @@ export type GoogleBook = {
   id: string
   source?: BookSourceName
   sourceTrace?: BookSourceName[]
+  sourceDetails?: {
+    sources: Partial<Record<BookSourceName, { id?: string; link?: string }>>
+    debug?: {
+      mergedIds: string[]
+      reasons: string[]
+      confidence: number
+    }
+  }
   volumeInfo: {
     title: string
     authors?: string[]
@@ -124,7 +134,6 @@ type BookSourceAdapter = {
 
 const HEBREW_RE = /[\u0590-\u05FF]/
 const NIKKUD_RE = /[\u0591-\u05C7]/g
-const HEBREW_PUNCT_RE = /[\u05BE\u05C0\u05C3\u05F3\u05F4]/g
 const OPEN_LIBRARY_LANGUAGE_FILTER: Record<string, string> = {
   en: 'eng',
   he: 'heb',
@@ -153,47 +162,19 @@ const HEBREW_PUBLISHER_HINTS = [
 ]
 
 function normalizeText(value: string | null | undefined): string {
-  return String(value || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[“”„‟«»]/g, '"')
-    .replace(/[’‘‚‛`´]/g, "'")
-    .replace(HEBREW_PUNCT_RE, ' ')
-    .replace(/[‐‑‒–—―]/g, '-')
-    .replace(/[\]\[(){}|\\/.,;:!?]+/g, ' ')
-    .replace(/[^\p{L}\p{N}'"-]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return normalizeBookText(value)
 }
 
 function normalizeHebrewForMatch(value: string | null | undefined): string {
-  const normalized = normalizeText(value)
-    .replace(NIKKUD_RE, '')
-    .replace(/["']/g, '')
-    .replace(/\bו-/g, 'ו')
-    .replace(/-/g, ' ')
-
-  return normalized
-    .replace(/ך/g, 'כ')
-    .replace(/ם/g, 'מ')
-    .replace(/ן/g, 'נ')
-    .replace(/ף/g, 'פ')
-    .replace(/ץ/g, 'צ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return normalizeHebrewForComparison(value)
 }
 
 function normalizeIdentifier(value: string | null | undefined): string {
-  return String(value || '').replace(/[^0-9X]/gi, '').toUpperCase()
+  return normalizeBookIdentifier(value)
 }
 
 function normalizeLanguage(value: string | null | undefined): string | undefined {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (!normalized) return undefined
-  if (normalized.startsWith('he') || normalized === 'heb') return 'he'
-  if (normalized.startsWith('en') || normalized === 'eng') return 'en'
-  return normalized
+  return normalizeBookLanguage(value)
 }
 
 function normalizeImageUrl(url: string | undefined): string | undefined {
@@ -233,9 +214,21 @@ function withSourceTrace(book: GoogleBook): GoogleBook {
     trace.add(source)
   }
 
+  const sources: Partial<Record<BookSourceName, { id?: string; link?: string }>> = {
+    ...(book.sourceDetails?.sources || {}),
+  }
+
+  if (book.source && !sources[book.source]) {
+    sources[book.source] = { id: book.id }
+  }
+
   return {
     ...book,
     sourceTrace: Array.from(trace),
+    sourceDetails: {
+      ...(book.sourceDetails || { sources: {} }),
+      sources,
+    },
   }
 }
 
@@ -331,6 +324,14 @@ function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
   return withSourceTrace({
     id: `openlibrary:${doc.key || doc.title}`,
     source: 'openlibrary',
+    sourceDetails: {
+      sources: {
+        openlibrary: {
+          id: doc.key,
+          link: doc.key ? `https://openlibrary.org${doc.key}` : undefined,
+        },
+      },
+    },
     volumeInfo: {
       title: doc.title,
       authors: doc.author_name || [],
@@ -365,6 +366,14 @@ function mapGutendexBook(book: GutendexBook): GoogleBook | null {
   return withSourceTrace({
     id: `gutendex:${book.id}`,
     source: 'gutendex',
+    sourceDetails: {
+      sources: {
+        gutendex: {
+          id: String(book.id),
+          link: `https://gutendex.com/books/${book.id}`,
+        },
+      },
+    },
     volumeInfo: {
       title: book.title,
       authors: (book.authors || [])
@@ -392,6 +401,14 @@ function mapWikipediaPageToBook(page: WikipediaPage, language: 'he' | 'en'): Goo
   return withSourceTrace({
     id: `wikipedia:${language}:${page.pageid || page.title}`,
     source: 'wikipedia',
+    sourceDetails: {
+      sources: {
+        wikipedia: {
+          id: page.pageid ? String(page.pageid) : page.title,
+          link: `https://${language}.wikipedia.org/wiki/${encodeURIComponent(page.title)}`,
+        },
+      },
+    },
     volumeInfo: {
       title: page.title,
       authors: [],
@@ -418,6 +435,14 @@ function mapWikidataResultToBook(result: WikidataSearchResult, languageHint?: st
   return withSourceTrace({
     id: `wikidata:${result.id}`,
     source: 'wikidata',
+    sourceDetails: {
+      sources: {
+        wikidata: {
+          id: result.id,
+          link: `https://www.wikidata.org/wiki/${result.id}`,
+        },
+      },
+    },
     volumeInfo: {
       title: result.label,
       authors: [],
@@ -580,6 +605,14 @@ async function searchGoogleSource(query: string, langRestrict?: string): Promise
         withSourceTrace({
           ...item,
           source: 'google' as const,
+          sourceDetails: {
+            sources: {
+              google: {
+                id: item.id,
+                link: item.id ? `https://books.google.com/books?id=${encodeURIComponent(item.id)}` : undefined,
+              },
+            },
+          },
           volumeInfo: {
             ...item.volumeInfo,
             language: normalizeLanguage(item.volumeInfo.language),
@@ -1064,7 +1097,8 @@ export async function searchGoogleBooks(query: string, langRestrict?: string): P
   }
 
   if (books.length > 0) {
-    return rankAndDedupeBooks(fillMissingCoversFromMatches(books), normalizedQuery, langRestrict)
+    const ranked = rankAndDedupeBooks(fillMissingCoversFromMatches(books), normalizedQuery, langRestrict)
+    return mergeDuplicateBooks(ranked, true).slice(0, 20)
   }
 
   if (settled.every((result) => result.status === 'rejected')) {
@@ -1096,5 +1130,7 @@ export function parseGoogleBook(book: GoogleBook) {
     published_date: info.publishedDate || null,
     page_count: info.pageCount || null,
     is_adult: info.maturityRating === 'MATURE',
+    source_refs: Object.keys(book.sourceDetails?.sources || {}).length > 0 ? book.sourceDetails?.sources : null,
+    source_trace: book.sourceTrace || null,
   }
 }

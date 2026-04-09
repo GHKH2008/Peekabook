@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS books (
   published_date VARCHAR(50),
   page_count INTEGER,
   is_adult BOOLEAN DEFAULT FALSE,
+  source_refs JSONB,
+  source_trace TEXT[],
   visibility VARCHAR(20) DEFAULT 'public' CHECK (visibility IN ('public', 'friends', 'private')),
   availability VARCHAR(20) DEFAULT 'available' CHECK (availability IN ('available', 'requested', 'loaned', 'unavailable')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,

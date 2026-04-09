@@ -1,0 +1,3 @@
+ALTER TABLE books
+  ADD COLUMN IF NOT EXISTS source_refs JSONB,
+  ADD COLUMN IF NOT EXISTS source_trace TEXT[];
