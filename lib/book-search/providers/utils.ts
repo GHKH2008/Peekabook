@@ -56,9 +56,13 @@ export function makeCandidate(input: {
   isbn13?: string[]
   identifiers?: string[]
   coverUrl?: string
+  coverUrls?: string[]
   pageCount?: number
   format?: string
   editionLabel?: string
+  tags?: string[]
+  seriesName?: string
+  seriesIndex?: number
   raw?: unknown
 }): BookCandidate {
   const title = input.title || 'Unknown'
@@ -70,6 +74,7 @@ export function makeCandidate(input: {
   const isbn10 = (input.isbn10 || []).map((v) => v.replace(/[^0-9X]/gi, '').toUpperCase()).filter(Boolean)
   const isbn13 = (input.isbn13 || []).map((v) => v.replace(/[^0-9]/g, '')).filter(Boolean)
   const identifiers = Array.from(new Set([...(input.identifiers || []), ...isbn10, ...isbn13]))
+  const cover_urls = Array.from(new Set([input.coverUrl, ...(input.coverUrls || [])].filter(Boolean) as string[]))
   const publish_year = Number(input.publishDate?.match(/\d{4}/)?.[0]) || undefined
   const languages = (input.languages || []).filter(Boolean)
 
@@ -92,9 +97,14 @@ export function makeCandidate(input: {
     isbn13,
     identifiers,
     cover_url: input.coverUrl,
+    cover_urls,
+    cover_score: cover_urls.length > 0 ? 1 : 0,
     page_count: input.pageCount,
     format: input.format,
     edition_label: input.editionLabel,
+    tags: input.tags || [],
+    series_name: input.seriesName,
+    series_index: input.seriesIndex,
     raw_title_normalized,
     raw_authors_normalized,
     title_key,

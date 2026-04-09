@@ -1,6 +1,7 @@
 export type BookProviderName =
   | 'google'
   | 'openlibrary'
+  | 'amazon'
   | 'steimatzky'
   | 'booknet'
   | 'indiebook'
@@ -77,9 +78,14 @@ export type BookCandidate = {
   isbn13?: string[]
   identifiers?: string[]
   cover_url?: string
+  cover_urls?: string[]
+  cover_score?: number
   page_count?: number
   format?: string
   edition_label?: string
+  tags?: string[]
+  series_name?: string
+  series_index?: number
 
   raw_title_normalized: string
   raw_authors_normalized: string[]
@@ -148,8 +154,10 @@ export type GroupedWork = {
   best_authors: string[]
   best_description?: string
   best_cover_url?: string
+  all_cover_urls?: string[]
   languages: string[]
   subjects: string[]
+  tags?: string[]
   representative_publish_year?: number
   source_summary: BookProviderName[]
   editions: BookCandidate[]
