@@ -2,12 +2,8 @@
 
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { searchGoogleBooks, parseGoogleBook, type GoogleBook } from '@/lib/google-books'
 import { revalidatePath } from 'next/cache'
 
-export async function searchBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
-  return searchGoogleBooks(query, langRestrict === 'all' ? undefined : langRestrict)
-}
 
 export type BookActionResult = {
   success: boolean
@@ -21,138 +17,6 @@ type CustomBookInput = {
   summary?: string
   publisher?: string
   publishedDate?: string
-}
-
-const DUPLICATE_BOOK_ERROR = 'This book is already in your library'
-
-function normalizeIdentifier(value: string | null | undefined): string | null {
-  const normalized = String(value || '').replace(/[^0-9X]/gi, '').toUpperCase()
-  return normalized || null
-}
-
-async function findDuplicateBookId(
-  userId: number,
-  bookData: ReturnType<typeof parseGoogleBook>
-): Promise<number | null> {
-  const checks: Array<{ column: 'google_books_id' | 'isbn_13' | 'isbn'; value: string | null }> = [
-    { column: 'google_books_id', value: bookData.google_books_id || null },
-    { column: 'isbn_13', value: normalizeIdentifier(bookData.isbn_13) },
-    { column: 'isbn', value: normalizeIdentifier(bookData.isbn) },
-  ]
-
-  for (const check of checks) {
-    if (!check.value) continue
-
-    const existing =
-      check.column === 'google_books_id'
-        ? await sql`
-            SELECT id
-            FROM books
-            WHERE user_id = ${userId}
-              AND google_books_id = ${check.value}
-            LIMIT 1
-          `
-        : check.column === 'isbn_13'
-          ? await sql`
-              SELECT id
-              FROM books
-              WHERE user_id = ${userId}
-                AND isbn_13 = ${check.value}
-              LIMIT 1
-            `
-          : await sql`
-              SELECT id
-              FROM books
-              WHERE user_id = ${userId}
-                AND isbn = ${check.value}
-              LIMIT 1
-            `
-
-    if (existing.length > 0) {
-      return existing[0].id as number
-    }
-  }
-
-  return null
-}
-
-export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActionResult> {
-  const user = await requireAuth()
-
-  const bookData = parseGoogleBook(googleBook)
-  bookData.isbn = normalizeIdentifier(bookData.isbn)
-  bookData.isbn_13 = normalizeIdentifier(bookData.isbn_13)
-
-  try {
-    const duplicateId = await findDuplicateBookId(user.id, bookData)
-    if (duplicateId) {
-      return { success: false, error: DUPLICATE_BOOK_ERROR, bookId: duplicateId }
-    }
-
-    const result = await sql`
-      INSERT INTO books (
-        user_id,
-        google_books_id,
-        title,
-        authors,
-        summary,
-        genres,
-        isbn,
-        isbn_13,
-        language,
-        cover_url,
-        publisher,
-        published_date,
-        page_count,
-        is_adult,
-        source_refs,
-        source_trace
-      ) VALUES (
-        ${user.id},
-        ${bookData.google_books_id},
-        ${bookData.title},
-        ${bookData.authors},
-        ${bookData.summary},
-        ${bookData.genres},
-        ${bookData.isbn},
-        ${bookData.isbn_13},
-        ${bookData.language},
-        ${bookData.cover_url},
-        ${bookData.publisher},
-        ${bookData.published_date},
-        ${bookData.page_count},
-        ${bookData.is_adult},
-        ${bookData.source_refs ? JSON.stringify(bookData.source_refs) : null}::jsonb,
-        ${bookData.source_trace}
-      )
-      RETURNING id
-    `
-
-    revalidatePath('/library')
-    revalidatePath('/dashboard')
-
-    return { success: true, bookId: result[0].id }
-  } catch (error) {
-    if (
-      error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      (error as { code?: string }).code === '23505'
-    ) {
-      return { success: false, error: DUPLICATE_BOOK_ERROR }
-    }
-
-    console.error('Failed to add book to library', {
-      error,
-      bookData,
-      userId: user.id,
-    })
-
-    return {
-      success: false,
-      error: 'Failed to add book to library',
-    }
-  }
 }
 
 export async function addCustomBookToLibrary(data: CustomBookInput): Promise<BookActionResult> {
