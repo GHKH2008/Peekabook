@@ -20,10 +20,18 @@ export type GoogleBook = {
       mergedIds: string[]
       reasons: string[]
       confidence: number
+      score?: number
+    }
+    openLibrary?: {
+      workKey?: string
+      editionKey?: string
+      isEdition?: boolean
+      rankReasons?: string[]
     }
   }
   volumeInfo: {
     title: string
+    subtitle?: string
     authors?: string[]
     description?: string
     categories?: string[]
@@ -50,21 +58,52 @@ export type GoogleBooksResponse = {
 
 type OpenLibrarySearchDoc = {
   key?: string
+  type?: 'work' | 'edition'
+  edition_key?: string[]
+  cover_edition_key?: string
+  subtitle?: string
   title?: string
   author_name?: string[]
+  author_key?: string[]
   first_sentence?: string | { value?: string }
+  first_publish_year?: number
+  publish_year?: number[]
+  publish_date?: string[]
   subject?: string[]
   isbn?: string[]
+  id_goodreads?: string[]
+  id_librarything?: string[]
   language?: string[]
   cover_i?: number
   publisher?: string[]
-  first_publish_year?: number
   number_of_pages_median?: number
 }
 
 type OpenLibrarySearchResponse = {
   numFound?: number
   docs?: OpenLibrarySearchDoc[]
+}
+
+type OpenLibraryEdition = {
+  key?: string
+  title?: string
+  subtitle?: string
+  works?: Array<{ key?: string }>
+  authors?: Array<{ key?: string; name?: string }>
+  by_statement?: string
+  isbn_10?: string[]
+  isbn_13?: string[]
+  covers?: number[]
+  languages?: Array<{ key?: string }>
+  publishers?: string[]
+  publish_date?: string
+  publish_places?: string[]
+  number_of_pages?: number
+  description?: string | { value?: string }
+}
+
+type OpenLibraryEditionsResponse = {
+  entries?: OpenLibraryEdition[]
 }
 
 type GutendexPerson = {
@@ -121,6 +160,7 @@ type WikidataSearchResponse = {
 type RankedBook = {
   book: GoogleBook
   score: number
+  reasons: string[]
 }
 
 type BookSourceAdapter = {
@@ -139,15 +179,26 @@ const OPEN_LIBRARY_LANGUAGE_FILTER: Record<string, string> = {
   he: 'heb',
 }
 const SOURCE_HEBREW_QUALITY: Partial<Record<BookSourceName, number>> = {
-  google: 28,
-  openlibrary: 20,
-  wikidata: 22,
+  google: 24,
+  openlibrary: 34,
+  wikidata: 8,
   wikipedia: 10,
   gutendex: -8,
   nli_catalog: 36,
   hebrewbooks_catalog: 26,
   israel_books_catalog: 30,
 }
+const SOURCE_BASE_QUALITY: Partial<Record<BookSourceName, number>> = {
+  openlibrary: 22,
+  google: 18,
+  wikidata: 4,
+  wikipedia: 0,
+  gutendex: -2,
+}
+const OPEN_LIBRARY_FETCH_TIMEOUT_MS = 6000
+const OPEN_LIBRARY_EDITION_EXPANSION_LIMIT = 4
+const OPEN_LIBRARY_EDITIONS_PER_WORK_LIMIT = 40
+const openLibraryWorkEditionsCache = new Map<string, Promise<GoogleBook[]>>()
 const HEBREW_PUBLISHER_HINTS = [
   'כתר',
   'עם עובד',
@@ -262,17 +313,26 @@ function buildOpenLibraryCoverUrl(
 async function fetchWithRetry(
   url: string,
   retries = 2,
-  baseDelay = 1500
+  baseDelay = 1500,
+  timeoutMs = OPEN_LIBRARY_FETCH_TIMEOUT_MS
 ): Promise<Response> {
   let lastError: Error | null = null
 
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: 'application/json',
-        },
-      })
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), timeoutMs)
+      let response: Response
+      try {
+        response = await fetch(url, {
+          headers: {
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeout)
+      }
 
       if (response.ok) {
         return response
@@ -316,24 +376,35 @@ async function fetchWithRetry(
 
 function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
   if (!doc.title) return null
+  const workKey = doc.key?.startsWith('/works/') ? doc.key : undefined
+  const editionKey =
+    doc.key?.startsWith('/books/') ? doc.key : doc.cover_edition_key ? `/books/${doc.cover_edition_key}` : undefined
 
   const isbn10 = doc.isbn?.find((isbn) => normalizeIdentifier(isbn).length === 10)
   const isbn13 = doc.isbn?.find((isbn) => normalizeIdentifier(isbn).length === 13)
   const coverUrl = normalizeImageUrl(buildOpenLibraryCoverUrl(doc))
+  const publishedYear =
+    doc.publish_year?.sort((a, b) => b - a)?.[0] || doc.first_publish_year
 
   return withSourceTrace({
-    id: `openlibrary:${doc.key || doc.title}`,
+    id: `openlibrary:${editionKey || workKey || doc.title}`,
     source: 'openlibrary',
     sourceDetails: {
       sources: {
         openlibrary: {
-          id: doc.key,
-          link: doc.key ? `https://openlibrary.org${doc.key}` : undefined,
+          id: editionKey || workKey,
+          link: editionKey || workKey ? `https://openlibrary.org${editionKey || workKey}` : undefined,
         },
+      },
+      openLibrary: {
+        workKey,
+        editionKey,
+        isEdition: Boolean(editionKey),
       },
     },
     volumeInfo: {
       title: doc.title,
+      subtitle: doc.subtitle,
       authors: doc.author_name || [],
       description: fetchDescriptionSentence(doc.first_sentence),
       categories: doc.subject?.slice(0, 5),
@@ -349,8 +420,68 @@ function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
           }
         : undefined,
       publisher: doc.publisher?.[0],
-      publishedDate: doc.first_publish_year ? String(doc.first_publish_year) : undefined,
+      publishedDate:
+        doc.publish_date?.find((value) => Boolean(value)) ||
+        (publishedYear ? String(publishedYear) : undefined),
       pageCount: doc.number_of_pages_median,
+      maturityRating: 'NOT_MATURE',
+    },
+  })
+}
+
+function parseOpenLibraryLanguage(languageKey: string | undefined): string | undefined {
+  if (!languageKey) return undefined
+  const raw = languageKey.split('/').filter(Boolean).pop()
+  return normalizeLanguage(raw)
+}
+
+function mapOpenLibraryEditionToBook(edition: OpenLibraryEdition, workKey?: string): GoogleBook | null {
+  if (!edition.title || !edition.key) return null
+
+  const isbn10 = edition.isbn_10?.find((isbn) => normalizeIdentifier(isbn).length === 10)
+  const isbn13 = edition.isbn_13?.find((isbn) => normalizeIdentifier(isbn).length === 13)
+  const description = fetchDescriptionSentence(edition.description)
+  const language = parseOpenLibraryLanguage(edition.languages?.[0]?.key)
+  const coverId = edition.covers?.[0]
+  const coverUrl = normalizeImageUrl(
+    coverId
+      ? `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`
+      : buildOpenLibraryCoverUrl({
+          key: edition.key,
+          isbn: [...(edition.isbn_13 || []), ...(edition.isbn_10 || [])],
+        })
+  )
+
+  return withSourceTrace({
+    id: `openlibrary:${edition.key}`,
+    source: 'openlibrary',
+    sourceDetails: {
+      sources: {
+        openlibrary: {
+          id: edition.key,
+          link: `https://openlibrary.org${edition.key}`,
+        },
+      },
+      openLibrary: {
+        workKey: workKey || edition.works?.[0]?.key,
+        editionKey: edition.key,
+        isEdition: true,
+      },
+    },
+    volumeInfo: {
+      title: edition.title,
+      subtitle: edition.subtitle,
+      authors: (edition.authors || []).map((author) => author.name).filter((name): name is string => Boolean(name)),
+      description,
+      industryIdentifiers: [
+        ...(isbn10 ? [{ type: 'ISBN_10', identifier: normalizeIdentifier(isbn10) }] : []),
+        ...(isbn13 ? [{ type: 'ISBN_13', identifier: normalizeIdentifier(isbn13) }] : []),
+      ],
+      language,
+      imageLinks: coverUrl ? { thumbnail: coverUrl, smallThumbnail: coverUrl } : undefined,
+      publisher: edition.publishers?.[0],
+      publishedDate: edition.publish_date,
+      pageCount: edition.number_of_pages,
       maturityRating: 'NOT_MATURE',
     },
   })
@@ -451,6 +582,56 @@ function mapWikidataResultToBook(result: WikidataSearchResult, languageHint?: st
       maturityRating: 'NOT_MATURE',
     },
   })
+}
+
+function getOpenLibraryWorkKey(book: GoogleBook): string | undefined {
+  const fromMeta = book.sourceDetails?.openLibrary?.workKey
+  if (fromMeta?.startsWith('/works/')) return fromMeta
+  const sourceId = book.sourceDetails?.sources?.openlibrary?.id
+  if (sourceId?.startsWith('/works/')) return sourceId
+  return undefined
+}
+
+function getOpenLibraryEditionKey(book: GoogleBook): string | undefined {
+  const fromMeta = book.sourceDetails?.openLibrary?.editionKey
+  if (fromMeta?.startsWith('/books/')) return fromMeta
+  const sourceId = book.sourceDetails?.sources?.openlibrary?.id
+  if (sourceId?.startsWith('/books/')) return sourceId
+  return undefined
+}
+
+async function fetchOpenLibraryWorkEditions(workKey: string): Promise<GoogleBook[]> {
+  if (openLibraryWorkEditionsCache.has(workKey)) {
+    return openLibraryWorkEditionsCache.get(workKey)!
+  }
+
+  const task = (async () => {
+    const params = new URLSearchParams({
+      limit: String(OPEN_LIBRARY_EDITIONS_PER_WORK_LIMIT),
+    })
+    const response = await fetchWithRetry(`https://openlibrary.org${workKey}/editions.json?${params.toString()}`)
+    const data: OpenLibraryEditionsResponse = await response.json()
+    return (data.entries || [])
+      .map((edition) => mapOpenLibraryEditionToBook(edition, workKey))
+      .filter((book): book is GoogleBook => Boolean(book))
+  })()
+  openLibraryWorkEditionsCache.set(workKey, task)
+  return task
+}
+
+function shouldExpandOpenLibraryDoc(doc: GoogleBook, query: string, langRestrict?: string): boolean {
+  const workKey = getOpenLibraryWorkKey(doc)
+  if (!workKey) return false
+  if (isLikelyIsbn(query)) return true
+  const queryHasHebrew = hasHebrewText(query)
+  if (queryHasHebrew) return true
+  if (langRestrict && normalizeLanguage(doc.volumeInfo.language) !== langRestrict) return true
+
+  const title = normalizeHebrewForMatch(doc.volumeInfo.title)
+  const normalizedQuery = normalizeHebrewForMatch(query)
+  if (!title || !normalizedQuery) return false
+
+  return title.includes(normalizedQuery) || normalizedQuery.includes(title)
 }
 
 function booksShareIsbn(primary: GoogleBook, secondary: GoogleBook): boolean {
@@ -645,8 +826,13 @@ async function searchOpenLibraryBooks(query: string, langRestrict?: string): Pro
   const requests: string[] = []
   const fieldList = [
     'key',
+    'type',
+    'edition_key',
+    'cover_edition_key',
     'title',
+    'subtitle',
     'author_name',
+    'author_key',
     'first_sentence',
     'subject',
     'isbn',
@@ -654,6 +840,8 @@ async function searchOpenLibraryBooks(query: string, langRestrict?: string): Pro
     'cover_i',
     'publisher',
     'first_publish_year',
+    'publish_year',
+    'publish_date',
     'number_of_pages_median',
   ].join(',')
 
@@ -697,7 +885,44 @@ async function searchOpenLibraryBooks(query: string, langRestrict?: string): Pro
     })
   )
 
-  return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+  const baseResults = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+  if (baseResults.length === 0) return []
+
+  const dedupedBase = new Map<string, GoogleBook>()
+  for (const item of baseResults) {
+    if (!dedupedBase.has(item.id)) dedupedBase.set(item.id, item)
+  }
+
+  const rankedForExpansion = Array.from(dedupedBase.values())
+    .map((book) => ({
+      book,
+      score: scoreBook(book, query, langRestrict).score,
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.book)
+
+  const workKeys = Array.from(
+    new Set(
+      rankedForExpansion
+        .filter((book) => shouldExpandOpenLibraryDoc(book, query, langRestrict))
+        .slice(0, OPEN_LIBRARY_EDITION_EXPANSION_LIMIT)
+        .map((book) => getOpenLibraryWorkKey(book))
+        .filter((key): key is string => Boolean(key))
+    )
+  )
+
+  const expansions = await Promise.allSettled(workKeys.map((workKey) => fetchOpenLibraryWorkEditions(workKey)))
+  const editionResults = expansions.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+
+  if (editionResults.length > 0) {
+    console.info('[books-search] openlibrary editions expanded', {
+      query,
+      workKeys,
+      editions: editionResults.length,
+    })
+  }
+
+  return [...dedupedBase.values(), ...editionResults]
 }
 
 async function searchGutendexBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
@@ -825,20 +1050,20 @@ function getOptionalCatalogAdapters(): BookSourceAdapter[] {
 function getSourceAdapters(): BookSourceAdapter[] {
   const core: BookSourceAdapter[] = [
     {
-      name: 'google',
-      priority: 9,
-      supportsLanguageFilter: true,
-      search: searchGoogleSource,
-    },
-    {
       name: 'openlibrary',
-      priority: 8,
+      priority: 12,
       supportsLanguageFilter: true,
       search: searchOpenLibraryBooks,
     },
     {
+      name: 'google',
+      priority: 11,
+      supportsLanguageFilter: true,
+      search: searchGoogleSource,
+    },
+    {
       name: 'wikidata',
-      priority: 10,
+      priority: 8,
       supportsLanguageFilter: true,
       isHebrewFocused: true,
       search: searchWikidataBooks,
@@ -878,6 +1103,9 @@ async function searchHebrewFallbackBooks(query: string): Promise<GoogleBook[]> {
 }
 
 function makeBookDedupeKey(book: GoogleBook): string {
+  const openLibraryEditionKey = getOpenLibraryEditionKey(book)
+  if (openLibraryEditionKey) return `openlibrary-edition:${openLibraryEditionKey}`
+
   const identifiers = book.volumeInfo.industryIdentifiers || []
   const isbn13 = identifiers.find((item) => item.type === 'ISBN_13')?.identifier
   const isbn10 = identifiers.find((item) => item.type === 'ISBN_10')?.identifier
@@ -889,7 +1117,26 @@ function makeBookDedupeKey(book: GoogleBook): string {
   return ['title', normalizeHebrewForMatch(book.volumeInfo.title), 'author', normalizeHebrewForMatch(author)].join(':')
 }
 
-function scoreBook(book: GoogleBook, query: string, langRestrict?: string): number {
+type ScoreResult = {
+  score: number
+  reasons: string[]
+}
+
+function getMetadataRichnessScore(book: GoogleBook): number {
+  const info = book.volumeInfo
+  let richness = 0
+  if (info.subtitle) richness += 6
+  if (info.description) richness += 8
+  if ((info.authors || []).length > 0) richness += 6
+  if ((info.industryIdentifiers || []).length > 0) richness += 12
+  if (info.publisher) richness += 5
+  if (info.publishedDate) richness += 5
+  if (info.language) richness += 4
+  if (info.imageLinks?.thumbnail) richness += 8
+  return richness
+}
+
+export function scoreBook(book: GoogleBook, query: string, langRestrict?: string): ScoreResult {
   const normalizedQuery = normalizeHebrewForMatch(query)
   const tokens = normalizedQuery.split(' ').filter(Boolean)
   const title = normalizeHebrewForMatch(book.volumeInfo.title)
@@ -899,13 +1146,17 @@ function scoreBook(book: GoogleBook, query: string, langRestrict?: string): numb
   const queryHasHebrew = hasHebrewText(query)
 
   let score = 0
+  const reasons: string[] = []
 
   if (title === normalizedQuery) {
     score += 240
+    reasons.push('exact_title')
   } else if (title.startsWith(normalizedQuery)) {
     score += 160
+    reasons.push('title_prefix')
   } else if (title.includes(normalizedQuery)) {
     score += 110
+    reasons.push('title_contains')
   }
 
   for (const token of tokens) {
@@ -919,18 +1170,21 @@ function scoreBook(book: GoogleBook, query: string, langRestrict?: string): numb
     const normalizedIsbn = normalizeIdentifier(query)
     if (identifiers.some((identifier) => normalizeIdentifier(identifier.identifier) === normalizedIsbn)) {
       score += 320
+      reasons.push('isbn_match')
     }
   }
 
   const normalizedBookLanguage = normalizeLanguage(book.volumeInfo.language)
   if (langRestrict && normalizedBookLanguage === langRestrict) {
     score += 55
+    reasons.push('language_filter_match')
   }
 
   if (queryHasHebrew) {
     if (hasHebrewText(book.volumeInfo.title)) score += 75
     if (hasHebrewText((book.volumeInfo.authors || []).join(' '))) score += 35
     if (hasHebrewText(book.volumeInfo.publisher)) score += 20
+    if (normalizedBookLanguage === 'he') reasons.push('hebrew_language')
 
     for (const hint of HEBREW_PUBLISHER_HINTS) {
       if (publisher.includes(normalizeHebrewForMatch(hint))) {
@@ -952,26 +1206,62 @@ function scoreBook(book: GoogleBook, query: string, langRestrict?: string): numb
   }
 
   if (book.source === 'wikipedia') score -= 18
-  if (book.volumeInfo.imageLinks?.thumbnail) score += 8
-  if ((book.volumeInfo.industryIdentifiers || []).length > 0) score += 6
-  if (book.volumeInfo.description) score += 4
+  score += SOURCE_BASE_QUALITY[book.source || 'google'] || 0
+  if (book.sourceDetails?.openLibrary?.isEdition) {
+    score += 26
+    reasons.push('openlibrary_edition')
+  }
+  if (getOpenLibraryEditionKey(book)) {
+    score += 8
+  }
+  if (book.volumeInfo.imageLinks?.thumbnail) reasons.push('has_cover')
+  if ((book.volumeInfo.industryIdentifiers || []).length > 0) reasons.push('has_isbn')
+  score += getMetadataRichnessScore(book)
+  reasons.push(`metadata_richness:${getMetadataRichnessScore(book)}`)
 
-  return score
+  return { score, reasons }
 }
 
 function rankAndDedupeBooks(books: GoogleBook[], query: string, langRestrict?: string): GoogleBook[] {
-  const ranked: RankedBook[] = books.map((book) => ({
-    book,
-    score: scoreBook(book, query, langRestrict),
-  }))
+  const ranked: RankedBook[] = books.map((book) => {
+    const scored = scoreBook(book, query, langRestrict)
+    return {
+      book,
+      score: scored.score,
+      reasons: scored.reasons,
+    }
+  })
 
   ranked.sort((a, b) => b.score - a.score)
+  console.info('[books-search] ranking snapshot', {
+    query,
+    langRestrict,
+    top: ranked.slice(0, 8).map((entry) => ({
+      id: entry.book.id,
+      source: entry.book.source,
+      score: Number(entry.score.toFixed(2)),
+      reasons: entry.reasons.slice(0, 6),
+      title: entry.book.volumeInfo.title,
+    })),
+  })
 
   const deduped = new Map<string, GoogleBook>()
   for (const entry of ranked) {
+    const withDebug: GoogleBook = {
+      ...entry.book,
+      sourceDetails: {
+        ...(entry.book.sourceDetails || { sources: {} }),
+        debug: {
+          mergedIds: entry.book.sourceDetails?.debug?.mergedIds || [entry.book.id],
+          confidence: entry.book.sourceDetails?.debug?.confidence || Number(entry.score.toFixed(2)),
+          score: Number(entry.score.toFixed(2)),
+          reasons: entry.reasons,
+        },
+      },
+    }
     const key = makeBookDedupeKey(entry.book)
     const existing = deduped.get(key)
-    deduped.set(key, existing ? mergeBooks(existing, entry.book) : entry.book)
+    deduped.set(key, existing ? mergeBooks(existing, withDebug) : withDebug)
   }
 
   return Array.from(deduped.values()).slice(0, 20)
@@ -1054,7 +1344,7 @@ export async function enrichGoogleBook(book: GoogleBook): Promise<GoogleBook> {
       .filter((candidate) => areLikelySameBook(book, candidate))
       .sort((a, b) => {
         const query = `${book.volumeInfo.title} ${(book.volumeInfo.authors || []).join(' ')}`
-        return scoreBook(b, query, langHint) - scoreBook(a, query, langHint)
+        return scoreBook(b, query, langHint).score - scoreBook(a, query, langHint).score
       })
 
     let enriched = book
@@ -1133,4 +1423,10 @@ export function parseGoogleBook(book: GoogleBook) {
     source_refs: Object.keys(book.sourceDetails?.sources || {}).length > 0 ? book.sourceDetails?.sources : null,
     source_trace: book.sourceTrace || null,
   }
+}
+
+export const __testables = {
+  mapOpenLibraryDocToBook,
+  mapOpenLibraryEditionToBook,
+  rankAndDedupeBooks,
 }
