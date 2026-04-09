@@ -101,7 +101,16 @@ function pickBetterPublishedDate(
 }
 
 function mergeBookGroup(books: GoogleBook[]): GoogleBook {
-  const preferredSourceOrder: Array<GoogleBook['source']> = ['google', 'openlibrary', 'gutendex', 'wikipedia']
+  const preferredSourceOrder: Array<GoogleBook['source']> = [
+    'nli_catalog',
+    'israel_books_catalog',
+    'hebrewbooks_catalog',
+    'google',
+    'openlibrary',
+    'wikidata',
+    'gutendex',
+    'wikipedia',
+  ]
   const sorted = [...books].sort((a, b) => {
     const ai = preferredSourceOrder.indexOf(a.source)
     const bi = preferredSourceOrder.indexOf(b.source)
@@ -466,6 +475,11 @@ export default function AddBookPage() {
                       {book.volumeInfo.description && (
                         <p className="text-sm text-muted-foreground mt-2 line-clamp-2">
                           {book.volumeInfo.description}
+                        </p>
+                      )}
+                      {book.sourceTrace && book.sourceTrace.length > 0 && (
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Sources: {book.sourceTrace.join(', ')}
                         </p>
                       )}
                     </div>

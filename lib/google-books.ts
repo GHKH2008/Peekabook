@@ -1,6 +1,17 @@
+export type BookSourceName =
+  | 'google'
+  | 'openlibrary'
+  | 'gutendex'
+  | 'wikipedia'
+  | 'wikidata'
+  | 'nli_catalog'
+  | 'hebrewbooks_catalog'
+  | 'israel_books_catalog'
+
 export type GoogleBook = {
   id: string
-  source?: 'google' | 'openlibrary' | 'gutendex' | 'wikipedia'
+  source?: BookSourceName
+  sourceTrace?: BookSourceName[]
   volumeInfo: {
     title: string
     authors?: string[]
@@ -87,24 +98,89 @@ type WikipediaQueryResponse = {
   }
 }
 
+type WikidataSearchResult = {
+  id?: string
+  label?: string
+  description?: string
+}
+
+type WikidataSearchResponse = {
+  search?: WikidataSearchResult[]
+}
+
 type RankedBook = {
   book: GoogleBook
   score: number
 }
 
+type BookSourceAdapter = {
+  name: BookSourceName
+  priority: number
+  supportsLanguageFilter?: boolean
+  isHebrewFocused?: boolean
+  enabled?: () => boolean
+  search: (query: string, langRestrict?: string) => Promise<GoogleBook[]>
+}
+
 const HEBREW_RE = /[\u0590-\u05FF]/
 const NIKKUD_RE = /[\u0591-\u05C7]/g
+const HEBREW_PUNCT_RE = /[\u05BE\u05C0\u05C3\u05F3\u05F4]/g
 const OPEN_LIBRARY_LANGUAGE_FILTER: Record<string, string> = {
   en: 'eng',
   he: 'heb',
 }
+const SOURCE_HEBREW_QUALITY: Partial<Record<BookSourceName, number>> = {
+  google: 28,
+  openlibrary: 20,
+  wikidata: 22,
+  wikipedia: 10,
+  gutendex: -8,
+  nli_catalog: 36,
+  hebrewbooks_catalog: 26,
+  israel_books_catalog: 30,
+}
+const HEBREW_PUBLISHER_HINTS = [
+  'כתר',
+  'עם עובד',
+  'ידיעות',
+  'ספרית',
+  'מוסד ביאליק',
+  'כתר הוצאה',
+  'יד ושם',
+  'כנרת',
+  'זמורה',
+  'דביר',
+]
 
 function normalizeText(value: string | null | undefined): string {
   return String(value || '')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/[“”„‟«»]/g, '"')
+    .replace(/[’‘‚‛`´]/g, "'")
+    .replace(HEBREW_PUNCT_RE, ' ')
+    .replace(/[‐‑‒–—―]/g, '-')
+    .replace(/[\]\[(){}|\\/.,;:!?]+/g, ' ')
+    .replace(/[^\p{L}\p{N}'"-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizeHebrewForMatch(value: string | null | undefined): string {
+  const normalized = normalizeText(value)
+    .replace(NIKKUD_RE, '')
+    .replace(/["']/g, '')
+    .replace(/\bו-/g, 'ו')
+    .replace(/-/g, ' ')
+
+  return normalized
+    .replace(/ך/g, 'כ')
+    .replace(/ם/g, 'מ')
+    .replace(/ן/g, 'נ')
+    .replace(/ף/g, 'פ')
+    .replace(/ץ/g, 'צ')
+    .replace(/\s+/g, ' ')
     .trim()
 }
 
@@ -115,8 +191,8 @@ function normalizeIdentifier(value: string | null | undefined): string {
 function normalizeLanguage(value: string | null | undefined): string | undefined {
   const normalized = String(value || '').trim().toLowerCase()
   if (!normalized) return undefined
-  if (normalized.startsWith('he')) return 'he'
-  if (normalized.startsWith('en')) return 'en'
+  if (normalized.startsWith('he') || normalized === 'heb') return 'he'
+  if (normalized.startsWith('en') || normalized === 'eng') return 'en'
   return normalized
 }
 
@@ -126,16 +202,8 @@ function normalizeImageUrl(url: string | undefined): string | undefined {
   return url.replace('http://', 'https://')
 }
 
-function getPublishedYear(value: string | undefined): string {
-  return String(value || '').slice(0, 4)
-}
-
 function isLikelyIsbn(value: string): boolean {
   return /^[\dX-]{10,17}$/i.test(value.trim())
-}
-
-function removeNikkud(value: string): string {
-  return value.replace(NIKKUD_RE, '').trim()
 }
 
 function fetchDescriptionSentence(
@@ -157,6 +225,18 @@ function getBookIsbnCandidates(book: GoogleBook): string[] {
   return (book.volumeInfo.industryIdentifiers || [])
     .map((identifier) => normalizeIdentifier(identifier.identifier))
     .filter(Boolean)
+}
+
+function withSourceTrace(book: GoogleBook): GoogleBook {
+  const trace = new Set<BookSourceName>(book.source ? [book.source] : [])
+  for (const source of book.sourceTrace || []) {
+    trace.add(source)
+  }
+
+  return {
+    ...book,
+    sourceTrace: Array.from(trace),
+  }
 }
 
 function buildOpenLibraryCoverUrl(
@@ -208,9 +288,7 @@ async function fetchWithRetry(
       if (response.status === 429) {
         lastError = new Error(`Rate limited: ${response.status}`)
         if (i < retries - 1) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, baseDelay * Math.pow(2, i))
-          )
+          await new Promise((resolve) => setTimeout(resolve, baseDelay * Math.pow(2, i)))
           continue
         }
         throw lastError
@@ -250,7 +328,7 @@ function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
   const isbn13 = doc.isbn?.find((isbn) => normalizeIdentifier(isbn).length === 13)
   const coverUrl = normalizeImageUrl(buildOpenLibraryCoverUrl(doc))
 
-  return {
+  return withSourceTrace({
     id: `openlibrary:${doc.key || doc.title}`,
     source: 'openlibrary',
     volumeInfo: {
@@ -270,13 +348,11 @@ function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
           }
         : undefined,
       publisher: doc.publisher?.[0],
-      publishedDate: doc.first_publish_year
-        ? String(doc.first_publish_year)
-        : undefined,
+      publishedDate: doc.first_publish_year ? String(doc.first_publish_year) : undefined,
       pageCount: doc.number_of_pages_median,
       maturityRating: 'NOT_MATURE',
     },
-  }
+  })
 }
 
 function mapGutendexBook(book: GutendexBook): GoogleBook | null {
@@ -286,7 +362,7 @@ function mapGutendexBook(book: GutendexBook): GoogleBook | null {
     book.formats?.['image/jpeg'] || book.formats?.['image/png'] || undefined
   )
 
-  return {
+  return withSourceTrace({
     id: `gutendex:${book.id}`,
     source: 'gutendex',
     volumeInfo: {
@@ -305,18 +381,15 @@ function mapGutendexBook(book: GutendexBook): GoogleBook | null {
         : undefined,
       maturityRating: 'NOT_MATURE',
     },
-  }
+  })
 }
 
-function mapWikipediaPageToBook(
-  page: WikipediaPage,
-  language: 'he' | 'en'
-): GoogleBook | null {
+function mapWikipediaPageToBook(page: WikipediaPage, language: 'he' | 'en'): GoogleBook | null {
   if (!page.title) return null
 
   const coverUrl = normalizeImageUrl(page.thumbnail?.source)
 
-  return {
+  return withSourceTrace({
     id: `wikipedia:${language}:${page.pageid || page.title}`,
     source: 'wikipedia',
     volumeInfo: {
@@ -336,7 +409,23 @@ function mapWikipediaPageToBook(
         : undefined,
       maturityRating: 'NOT_MATURE',
     },
-  }
+  })
+}
+
+function mapWikidataResultToBook(result: WikidataSearchResult, languageHint?: string): GoogleBook | null {
+  if (!result.id || !result.label) return null
+
+  return withSourceTrace({
+    id: `wikidata:${result.id}`,
+    source: 'wikidata',
+    volumeInfo: {
+      title: result.label,
+      authors: [],
+      description: result.description,
+      language: normalizeLanguage(languageHint) || (hasHebrewText(result.label) ? 'he' : undefined),
+      maturityRating: 'NOT_MATURE',
+    },
+  })
 }
 
 function booksShareIsbn(primary: GoogleBook, secondary: GoogleBook): boolean {
@@ -347,8 +436,8 @@ function booksShareIsbn(primary: GoogleBook, secondary: GoogleBook): boolean {
 }
 
 function titlesLookCompatible(primary: GoogleBook, secondary: GoogleBook): boolean {
-  const primaryTitle = normalizeText(primary.volumeInfo.title)
-  const secondaryTitle = normalizeText(secondary.volumeInfo.title)
+  const primaryTitle = normalizeHebrewForMatch(primary.volumeInfo.title)
+  const secondaryTitle = normalizeHebrewForMatch(secondary.volumeInfo.title)
 
   if (!primaryTitle || !secondaryTitle) return false
   if (primaryTitle === secondaryTitle) return true
@@ -360,8 +449,8 @@ function titlesLookCompatible(primary: GoogleBook, secondary: GoogleBook): boole
 }
 
 function authorsLookCompatible(primary: GoogleBook, secondary: GoogleBook): boolean {
-  const primaryAuthor = normalizeText(primary.volumeInfo.authors?.[0])
-  const secondaryAuthor = normalizeText(secondary.volumeInfo.authors?.[0])
+  const primaryAuthor = normalizeHebrewForMatch(primary.volumeInfo.authors?.[0])
+  const secondaryAuthor = normalizeHebrewForMatch(secondary.volumeInfo.authors?.[0])
 
   if (!primaryAuthor || !secondaryAuthor) return true
   if (primaryAuthor === secondaryAuthor) return true
@@ -389,11 +478,7 @@ function shouldUseCoverFromCandidate(primary: GoogleBook, candidate: GoogleBook)
   const sameAuthor = authorsLookCompatible(primary, candidate)
   const sharedIsbn = booksShareIsbn(primary, candidate)
 
-  if (primaryHasHebrew !== candidateHasHebrew) {
-    if (!sharedIsbn) return false
-    if (primaryLang && candidateLang && primaryLang !== candidateLang) return false
-    return false
-  }
+  if (primaryHasHebrew !== candidateHasHebrew) return false
 
   if (primaryLang && candidateLang && primaryLang !== candidateLang) {
     if (!sharedIsbn) return false
@@ -422,55 +507,51 @@ function mergeBooks(primary: GoogleBook, secondary: GoogleBook): GoogleBook {
 
   const primaryCover = normalizeImageUrl(primary.volumeInfo.imageLinks?.thumbnail)
   const secondaryCover = normalizeImageUrl(secondary.volumeInfo.imageLinks?.thumbnail)
-  const mergedCover =
-    primaryCover || (shouldUseCoverFromCandidate(primary, secondary) ? secondaryCover : undefined)
+  const allowSecondaryCover = shouldUseCoverFromCandidate(primary, secondary)
+  const mergedCover = primaryCover || (allowSecondaryCover ? secondaryCover : undefined)
+
+  const sourceTrace = new Set<BookSourceName>([
+    ...(primary.sourceTrace || []),
+    ...(secondary.sourceTrace || []),
+    ...(primary.source ? [primary.source] : []),
+    ...(secondary.source ? [secondary.source] : []),
+  ])
 
   return {
     ...primary,
+    sourceTrace: Array.from(sourceTrace),
     volumeInfo: {
       ...secondary.volumeInfo,
       ...primary.volumeInfo,
-      title:
-        primary.volumeInfo.title || secondary.volumeInfo.title || 'Unknown title',
+      title: primary.volumeInfo.title || secondary.volumeInfo.title || 'Unknown title',
       authors:
-        primary.volumeInfo.authors?.length
-          ? primary.volumeInfo.authors
-          : secondary.volumeInfo.authors,
-      description:
-        primary.volumeInfo.description || secondary.volumeInfo.description,
+        primary.volumeInfo.authors?.length ? primary.volumeInfo.authors : secondary.volumeInfo.authors,
+      description: primary.volumeInfo.description || secondary.volumeInfo.description,
       categories:
-        primary.volumeInfo.categories?.length
-          ? primary.volumeInfo.categories
-          : secondary.volumeInfo.categories,
+        primary.volumeInfo.categories?.length ? primary.volumeInfo.categories : secondary.volumeInfo.categories,
       industryIdentifiers: Array.from(dedupedIdentifiers.values()),
       language:
-        normalizeLanguage(primary.volumeInfo.language) ||
-        normalizeLanguage(secondary.volumeInfo.language),
+        normalizeLanguage(primary.volumeInfo.language) || normalizeLanguage(secondary.volumeInfo.language),
       imageLinks: mergedCover
         ? {
             thumbnail: mergedCover,
             smallThumbnail:
               normalizeImageUrl(primary.volumeInfo.imageLinks?.smallThumbnail) ||
-              (shouldUseCoverFromCandidate(primary, secondary)
+              (allowSecondaryCover
                 ? normalizeImageUrl(secondary.volumeInfo.imageLinks?.smallThumbnail)
                 : undefined) ||
               mergedCover,
           }
         : undefined,
       publisher: primary.volumeInfo.publisher || secondary.volumeInfo.publisher,
-      publishedDate:
-        primary.volumeInfo.publishedDate || secondary.volumeInfo.publishedDate,
+      publishedDate: primary.volumeInfo.publishedDate || secondary.volumeInfo.publishedDate,
       pageCount: primary.volumeInfo.pageCount || secondary.volumeInfo.pageCount,
-      maturityRating:
-        primary.volumeInfo.maturityRating || secondary.volumeInfo.maturityRating,
+      maturityRating: primary.volumeInfo.maturityRating || secondary.volumeInfo.maturityRating,
     },
   }
 }
 
-async function searchGoogleSource(
-  query: string,
-  langRestrict?: string
-): Promise<GoogleBook[]> {
+async function searchGoogleSource(query: string, langRestrict?: string): Promise<GoogleBook[]> {
   const normalizedQuery = query.trim()
   if (!normalizedQuery) return []
 
@@ -493,43 +574,38 @@ async function searchGoogleSource(
         params.set('langRestrict', langRestrict)
       }
 
-      const response = await fetchWithRetry(
-        `https://www.googleapis.com/books/v1/volumes?${params.toString()}`
-      )
+      const response = await fetchWithRetry(`https://www.googleapis.com/books/v1/volumes?${params.toString()}`)
       const data: GoogleBooksResponse = await response.json()
-      return (data.items || []).map((item) => ({
-        ...item,
-        source: 'google' as const,
-        volumeInfo: {
-          ...item.volumeInfo,
-          language: normalizeLanguage(item.volumeInfo.language),
-          imageLinks: item.volumeInfo.imageLinks
-            ? {
-                thumbnail: normalizeImageUrl(item.volumeInfo.imageLinks.thumbnail),
-                smallThumbnail: normalizeImageUrl(item.volumeInfo.imageLinks.smallThumbnail),
-              }
-            : undefined,
-        },
-      }))
+      return (data.items || []).map((item) =>
+        withSourceTrace({
+          ...item,
+          source: 'google' as const,
+          volumeInfo: {
+            ...item.volumeInfo,
+            language: normalizeLanguage(item.volumeInfo.language),
+            imageLinks: item.volumeInfo.imageLinks
+              ? {
+                  thumbnail: normalizeImageUrl(item.volumeInfo.imageLinks.thumbnail),
+                  smallThumbnail: normalizeImageUrl(item.volumeInfo.imageLinks.smallThumbnail),
+                }
+              : undefined,
+          },
+        })
+      )
     })
   )
 
   const deduped = new Map<string, GoogleBook>()
   for (const books of batches) {
     for (const book of books) {
-      if (!deduped.has(book.id)) {
-        deduped.set(book.id, book)
-      }
+      if (!deduped.has(book.id)) deduped.set(book.id, book)
     }
   }
 
   return Array.from(deduped.values())
 }
 
-async function searchOpenLibraryBooks(
-  query: string,
-  langRestrict?: string
-): Promise<GoogleBook[]> {
+async function searchOpenLibraryBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
   const trimmed = query.trim()
   if (!trimmed) return []
 
@@ -556,9 +632,7 @@ async function searchOpenLibraryBooks(
     limit: '12',
   })
 
-  if (langRestrict) {
-    primaryParams.set('lang', langRestrict)
-  }
+  if (langRestrict) primaryParams.set('lang', langRestrict)
 
   requests.push(`https://openlibrary.org/search.json?${primaryParams.toString()}`)
 
@@ -578,9 +652,7 @@ async function searchOpenLibraryBooks(
       fields: fieldList,
       limit: '12',
     })
-    if (langRestrict) {
-      titleParams.set('lang', langRestrict)
-    }
+    if (langRestrict) titleParams.set('lang', langRestrict)
     requests.push(`https://openlibrary.org/search.json?${titleParams.toString()}`)
   }
 
@@ -588,54 +660,33 @@ async function searchOpenLibraryBooks(
     requests.map(async (url) => {
       const response = await fetchWithRetry(url)
       const data: OpenLibrarySearchResponse = await response.json()
-      return (data.docs || [])
-        .map(mapOpenLibraryDocToBook)
-        .filter((book): book is GoogleBook => Boolean(book))
+      return (data.docs || []).map(mapOpenLibraryDocToBook).filter((book): book is GoogleBook => Boolean(book))
     })
   )
 
   return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
 }
 
-async function searchGutendexBooks(
-  query: string,
-  langRestrict?: string
-): Promise<GoogleBook[]> {
+async function searchGutendexBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
   const trimmed = query.trim()
   if (!trimmed) return []
 
-  const params = new URLSearchParams({
-    search: trimmed,
-  })
-
-  if (langRestrict) {
-    params.set('languages', langRestrict)
-  }
+  const params = new URLSearchParams({ search: trimmed })
+  if (langRestrict) params.set('languages', langRestrict)
 
   const response = await fetchWithRetry(`https://gutendex.com/books?${params.toString()}`)
   const data: GutendexResponse = await response.json()
 
-  return (data.results || [])
-    .map(mapGutendexBook)
-    .filter((book): book is GoogleBook => Boolean(book))
+  return (data.results || []).map(mapGutendexBook).filter((book): book is GoogleBook => Boolean(book))
 }
 
-async function searchWikipediaBooks(
-  query: string,
-  langRestrict?: string
-): Promise<GoogleBook[]> {
+async function searchWikipediaBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
   const trimmed = query.trim()
   if (!trimmed) return []
 
   const queryHasHebrew = HEBREW_RE.test(trimmed)
   const languages: Array<'he' | 'en'> =
-    langRestrict === 'he'
-      ? ['he', 'en']
-      : langRestrict === 'en'
-        ? ['en', 'he']
-        : queryHasHebrew
-          ? ['he', 'en']
-          : ['en', 'he']
+    langRestrict === 'he' ? ['he', 'en'] : langRestrict === 'en' ? ['en', 'he'] : queryHasHebrew ? ['he', 'en'] : ['en', 'he']
 
   const settled = await Promise.allSettled(
     languages.map(async (language) => {
@@ -657,9 +708,7 @@ async function searchWikipediaBooks(
         wbptterms: 'description',
       })
 
-      const response = await fetchWithRetry(
-        `https://${language}.wikipedia.org/w/api.php?${params.toString()}`
-      )
+      const response = await fetchWithRetry(`https://${language}.wikipedia.org/w/api.php?${params.toString()}`)
       const data: WikipediaQueryResponse = await response.json()
       const pages = Object.values(data.query?.pages || {})
       return pages
@@ -671,27 +720,125 @@ async function searchWikipediaBooks(
   return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
 }
 
+async function searchWikidataBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  const useHebrewLanguage = langRestrict === 'he' || hasHebrewText(trimmed)
+  const language = useHebrewLanguage ? 'he' : 'en'
+
+  const params = new URLSearchParams({
+    action: 'wbsearchentities',
+    search: trimmed,
+    language,
+    uselang: language,
+    type: 'item',
+    format: 'json',
+    limit: '10',
+  })
+
+  const response = await fetchWithRetry(`https://www.wikidata.org/w/api.php?${params.toString()}`)
+  const data: WikidataSearchResponse = await response.json()
+
+  return (data.search || [])
+    .map((result) => mapWikidataResultToBook(result, useHebrewLanguage ? 'he' : langRestrict))
+    .filter((book): book is GoogleBook => Boolean(book))
+}
+
+function getOptionalCatalogAdapters(): BookSourceAdapter[] {
+  const adapters: BookSourceAdapter[] = []
+
+  const nliEndpoint = process.env.NLI_SRU_ENDPOINT?.trim()
+  if (nliEndpoint) {
+    adapters.push({
+      name: 'nli_catalog',
+      priority: 14,
+      supportsLanguageFilter: true,
+      isHebrewFocused: true,
+      enabled: () => Boolean(process.env.NLI_SRU_ENDPOINT),
+      search: async () => {
+        return []
+      },
+    })
+  }
+
+  if (process.env.HEBREWBOOKS_ENABLE_ADAPTER === 'true') {
+    adapters.push({
+      name: 'hebrewbooks_catalog',
+      priority: 12,
+      supportsLanguageFilter: false,
+      isHebrewFocused: true,
+      search: async () => {
+        return []
+      },
+    })
+  }
+
+  if (process.env.ISRAEL_BOOKSTORE_FEED_URL?.trim()) {
+    adapters.push({
+      name: 'israel_books_catalog',
+      priority: 13,
+      supportsLanguageFilter: true,
+      isHebrewFocused: true,
+      search: async () => {
+        return []
+      },
+    })
+  }
+
+  return adapters
+}
+
+function getSourceAdapters(): BookSourceAdapter[] {
+  const core: BookSourceAdapter[] = [
+    {
+      name: 'google',
+      priority: 9,
+      supportsLanguageFilter: true,
+      search: searchGoogleSource,
+    },
+    {
+      name: 'openlibrary',
+      priority: 8,
+      supportsLanguageFilter: true,
+      search: searchOpenLibraryBooks,
+    },
+    {
+      name: 'wikidata',
+      priority: 10,
+      supportsLanguageFilter: true,
+      isHebrewFocused: true,
+      search: searchWikidataBooks,
+    },
+    {
+      name: 'gutendex',
+      priority: 4,
+      supportsLanguageFilter: true,
+      search: searchGutendexBooks,
+    },
+  ]
+
+  return [...core, ...getOptionalCatalogAdapters()]
+}
+
 async function searchHebrewFallbackBooks(query: string): Promise<GoogleBook[]> {
   const trimmed = query.trim()
   if (!trimmed || !HEBREW_RE.test(trimmed)) return []
 
-  const withoutNikkud = removeNikkud(trimmed)
+  const withoutNikkud = trimmed.replace(NIKKUD_RE, '').trim()
   const variants = Array.from(
-    new Set(
-      [
-        trimmed,
-        withoutNikkud,
-        `"${trimmed}"`,
-        withoutNikkud && withoutNikkud !== trimmed ? `"${withoutNikkud}"` : '',
-      ].filter(Boolean)
-    )
+    new Set([
+      trimmed,
+      withoutNikkud,
+      `"${trimmed}"`,
+      withoutNikkud && withoutNikkud !== trimmed ? `"${withoutNikkud}"` : '',
+    ].filter(Boolean))
   )
 
+  const adapters = getSourceAdapters().filter((adapter) => adapter.name !== 'gutendex')
+
   const settled = await Promise.allSettled(
-    variants.flatMap((variant) => [
-      searchGoogleSource(variant, 'he'),
-      searchOpenLibraryBooks(variant, 'he'),
-    ])
+    variants.flatMap((variant) => adapters.map((adapter) => adapter.search(variant, 'he')))
   )
 
   return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
@@ -706,106 +853,80 @@ function makeBookDedupeKey(book: GoogleBook): string {
   if (isbn10) return `isbn10:${normalizeIdentifier(isbn10)}`
 
   const author = book.volumeInfo.authors?.[0] || ''
-  const year = getPublishedYear(book.volumeInfo.publishedDate)
-
-  return [
-    'title',
-    normalizeText(book.volumeInfo.title),
-    'author',
-    normalizeText(author),
-    'year',
-    year,
-  ].join(':')
+  return ['title', normalizeHebrewForMatch(book.volumeInfo.title), 'author', normalizeHebrewForMatch(author)].join(':')
 }
 
-function scoreBook(
-  book: GoogleBook,
-  query: string,
-  langRestrict?: string
-): number {
-  const normalizedQuery = normalizeText(query)
+function scoreBook(book: GoogleBook, query: string, langRestrict?: string): number {
+  const normalizedQuery = normalizeHebrewForMatch(query)
   const tokens = normalizedQuery.split(' ').filter(Boolean)
-  const title = normalizeText(book.volumeInfo.title)
-  const authors = normalizeText((book.volumeInfo.authors || []).join(' '))
+  const title = normalizeHebrewForMatch(book.volumeInfo.title)
+  const authors = normalizeHebrewForMatch((book.volumeInfo.authors || []).join(' '))
+  const publisher = normalizeHebrewForMatch(book.volumeInfo.publisher)
   const identifiers = book.volumeInfo.industryIdentifiers || []
-  const queryHasHebrew = HEBREW_RE.test(query)
+  const queryHasHebrew = hasHebrewText(query)
 
   let score = 0
 
   if (title === normalizedQuery) {
-    score += 220
+    score += 240
   } else if (title.startsWith(normalizedQuery)) {
-    score += 140
+    score += 160
   } else if (title.includes(normalizedQuery)) {
-    score += 95
+    score += 110
   }
 
   for (const token of tokens) {
-    if (title.includes(token)) score += 18
-    if (authors.includes(token)) score += 10
+    if (token.length <= 1) continue
+    if (title.includes(token)) score += 22
+    if (authors.includes(token)) score += 12
+    if (publisher.includes(token)) score += 8
   }
 
   if (isLikelyIsbn(query)) {
     const normalizedIsbn = normalizeIdentifier(query)
-    if (
-      identifiers.some(
-        (identifier) =>
-          normalizeIdentifier(identifier.identifier) === normalizedIsbn
-      )
-    ) {
-      score += 300
+    if (identifiers.some((identifier) => normalizeIdentifier(identifier.identifier) === normalizedIsbn)) {
+      score += 320
     }
   }
 
-  if (langRestrict) {
-    if (normalizeLanguage(book.volumeInfo.language) === langRestrict) {
-      score += 50
-    }
-
-    if (
-      langRestrict === 'he' &&
-      (HEBREW_RE.test(book.volumeInfo.title) ||
-        HEBREW_RE.test((book.volumeInfo.authors || []).join(' ')))
-    ) {
-      score += 40
-    }
-
-    if (
-      langRestrict === 'en' &&
-      !HEBREW_RE.test(book.volumeInfo.title) &&
-      !HEBREW_RE.test((book.volumeInfo.authors || []).join(' '))
-    ) {
-      score += 20
-    }
+  const normalizedBookLanguage = normalizeLanguage(book.volumeInfo.language)
+  if (langRestrict && normalizedBookLanguage === langRestrict) {
+    score += 55
   }
 
   if (queryHasHebrew) {
-    if (HEBREW_RE.test(book.volumeInfo.title)) score += 35
-    if (book.source === 'openlibrary') score += 12
-    if (book.source === 'gutendex') score -= 12
-    if (book.source === 'wikipedia' && normalizeLanguage(book.volumeInfo.language) === 'he') {
-      score += 8
+    if (hasHebrewText(book.volumeInfo.title)) score += 75
+    if (hasHebrewText((book.volumeInfo.authors || []).join(' '))) score += 35
+    if (hasHebrewText(book.volumeInfo.publisher)) score += 20
+
+    for (const hint of HEBREW_PUBLISHER_HINTS) {
+      if (publisher.includes(normalizeHebrewForMatch(hint))) {
+        score += 16
+        break
+      }
+    }
+
+    score += SOURCE_HEBREW_QUALITY[book.source || 'google'] || 0
+
+    if (normalizedBookLanguage && normalizedBookLanguage !== 'he') {
+      score -= 45
+    }
+    if (!hasHebrewText(getPrimaryBookText(book)) && normalizedBookLanguage !== 'he') {
+      score -= 40
     }
   } else if (book.source === 'google') {
-    score += 6
+    score += 8
   }
 
-  if (book.source === 'wikipedia') {
-    score -= 25
-  }
-
-  if (book.volumeInfo.imageLinks?.thumbnail) score += 10
-  if ((book.volumeInfo.industryIdentifiers || []).length > 0) score += 4
-  if (book.volumeInfo.description) score += 2
+  if (book.source === 'wikipedia') score -= 18
+  if (book.volumeInfo.imageLinks?.thumbnail) score += 8
+  if ((book.volumeInfo.industryIdentifiers || []).length > 0) score += 6
+  if (book.volumeInfo.description) score += 4
 
   return score
 }
 
-function rankAndDedupeBooks(
-  books: GoogleBook[],
-  query: string,
-  langRestrict?: string
-): GoogleBook[] {
+function rankAndDedupeBooks(books: GoogleBook[], query: string, langRestrict?: string): GoogleBook[] {
   const ranked: RankedBook[] = books.map((book) => ({
     book,
     score: scoreBook(book, query, langRestrict),
@@ -824,9 +945,7 @@ function rankAndDedupeBooks(
 }
 
 function fillMissingCoversFromMatches(books: GoogleBook[]): GoogleBook[] {
-  const booksWithCovers = books.filter((book) =>
-    Boolean(normalizeImageUrl(book.volumeInfo.imageLinks?.thumbnail))
-  )
+  const booksWithCovers = books.filter((book) => Boolean(normalizeImageUrl(book.volumeInfo.imageLinks?.thumbnail)))
 
   return books.map((book) => {
     const currentCover = normalizeImageUrl(book.volumeInfo.imageLinks?.thumbnail)
@@ -845,7 +964,6 @@ function fillMissingCoversFromMatches(books: GoogleBook[]): GoogleBook[] {
     })
 
     if (!match) return book
-
     return mergeBooks(book, match)
   })
 }
@@ -892,9 +1010,7 @@ export async function enrichGoogleBook(book: GoogleBook): Promise<GoogleBook> {
     for (const query of queries.slice(0, 4)) {
       try {
         const results = await searchGoogleBooks(query, langHint)
-        for (const result of results) {
-          aggregated.set(result.id, result)
-        }
+        for (const result of results) aggregated.set(result.id, result)
       } catch {
         // Ignore individual enrichment failures
       }
@@ -920,22 +1036,22 @@ export async function enrichGoogleBook(book: GoogleBook): Promise<GoogleBook> {
   }
 }
 
-export async function searchGoogleBooks(
-  query: string,
-  langRestrict?: string
-): Promise<GoogleBook[]> {
+export async function searchGoogleBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
   const normalizedQuery = query.trim()
   if (!normalizedQuery) return []
 
-  const settled = await Promise.allSettled([
-    searchGoogleSource(normalizedQuery, langRestrict),
-    searchOpenLibraryBooks(normalizedQuery, langRestrict),
-    searchGutendexBooks(normalizedQuery, langRestrict),
-  ])
+  const adapters = getSourceAdapters().sort((a, b) => b.priority - a.priority)
 
-  let books = settled.flatMap((result) =>
-    result.status === 'fulfilled' ? result.value : []
+  const settled = await Promise.allSettled(
+    adapters.map(async (adapter) => {
+      if (adapter.enabled && !adapter.enabled()) return []
+      if (langRestrict && adapter.supportsLanguageFilter === false && langRestrict !== 'he') return []
+      const items = await adapter.search(normalizedQuery, langRestrict)
+      return items.map((item) => withSourceTrace(item))
+    })
   )
+
+  let books = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
 
   if (books.length === 0 && HEBREW_RE.test(normalizedQuery)) {
     const hebrewFallbackBooks = await searchHebrewFallbackBooks(normalizedQuery)
@@ -948,11 +1064,7 @@ export async function searchGoogleBooks(
   }
 
   if (books.length > 0) {
-    return rankAndDedupeBooks(
-      fillMissingCoversFromMatches(books),
-      normalizedQuery,
-      langRestrict
-    )
+    return rankAndDedupeBooks(fillMissingCoversFromMatches(books), normalizedQuery, langRestrict)
   }
 
   if (settled.every((result) => result.status === 'rejected')) {
