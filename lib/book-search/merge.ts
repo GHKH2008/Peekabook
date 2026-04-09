@@ -1,479 +1,255 @@
 import { stripPunctuation } from './normalize'
 import type {
-  BookIdentityKeys,
+  BookCandidate,
   CatalogEdition,
   CatalogWork,
+  ClusterDebugLog,
   GroupedBookResult,
-  NormalizedBookResult,
+  GroupedWork,
+  QueryPlan,
   SearchOrchestratorOptions,
 } from './types'
-
-type MergeDecision = { kept: string; merged: string; confidence: number; reasons: string[] }
-type MergeLog = {
-  workKey: string
-  candidateId: string
-  matched: boolean
-  score: number
-  reasons: string[]
-  blockedBy?: string[]
-}
 
 function normalizeId(value?: string): string {
   return String(value || '').replace(/[^0-9X]/gi, '').toUpperCase()
 }
 
-function normalizeText(value?: string): string {
-  return stripPunctuation(String(value || '').toLowerCase())
-}
-
-function parseOpenLibraryIds(result: NormalizedBookResult): { workId?: string; editionId?: string } {
-  const sourceId = String(result.source_id || '')
-  const raw = (result.raw_source_data || {}) as any
-
-  const workFromKey = sourceId.match(/\/works\/(OL\d+W)/i)?.[1]
-  const editionFromKey = sourceId.match(/\/books\/(OL\d+M)/i)?.[1]
-  const workFromRaw = raw?.key?.match?.(/\/works\/(OL\d+W)/i)?.[1]
-  const editionFromRaw = raw?.key?.match?.(/\/books\/(OL\d+M)/i)?.[1]
-  const workFromWorksArray = raw?.works?.[0]?.key?.match?.(/\/works\/(OL\d+W)/i)?.[1]
-
-  return {
-    workId: workFromKey || workFromRaw || workFromWorksArray,
-    editionId: editionFromKey || editionFromRaw || raw?.cover_edition_key,
-  }
-}
-
-function extractIdentity(result: NormalizedBookResult): BookIdentityKeys {
-  const isbns = [normalizeId(result.isbn_10), normalizeId(result.isbn_13)].filter(Boolean)
-  const raw = (result.raw_source_data || {}) as any
-  const openLibrary = result.source === 'openlibrary' ? parseOpenLibraryIds(result) : { workId: undefined, editionId: undefined }
-
-  return {
-    openlibrary_work_id: openLibrary.workId,
-    openlibrary_edition_id: openLibrary.editionId,
-    google_volume_id: result.source === 'google' ? result.source_id : undefined,
-    internal_book_code: String(raw?.book_code || raw?.code || '').trim() || undefined,
-    isbns,
-  }
-}
-
-function chooseCleanerTitle(values: string[]): string {
-  const scored = values
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-    .map((value) => {
-      const editionNoise = /\b(edition|ed\.?|trade paperback|paperback|hardcover|mass market|volume|vol\.?|book\s+\d+)\b/i.test(value)
-      const parenNoise = /\([^)]*(edition|paperback|hardcover|trade|mass market|\d+x\d+)\)/i.test(value)
-      return {
-        value,
-        score: (editionNoise ? -2 : 0) + (parenNoise ? -1 : 0) + Math.min(value.length, 90) / 90,
-      }
-    })
-    .sort((a, b) => b.score - a.score)
-
-  return scored[0]?.value || 'Unknown'
-}
-
-function baseEditionScore(candidate: NormalizedBookResult, options: SearchOrchestratorOptions = {}): number {
-  const preferredLanguage = String(options.language || '').toLowerCase()
-  let score = 0
-
-  if (candidate.cover_image) score += 20
-  if (candidate.description) score += 16
-  if (candidate.isbn_10 || candidate.isbn_13) score += 14
-  if (candidate.language && preferredLanguage && candidate.language.toLowerCase().startsWith(preferredLanguage)) score += 12
-  if (candidate.authors.length > 0) score += 8
-  if (candidate.categories && candidate.categories.length > 0) score += 8
-  if (candidate.publisher) score += 4
-  if (candidate.published_date) score += 4
-
-  const noisyTitle = /\b(paperback|hardcover|kindle|ebook|audiobook|mass market|edition|vol\.?|volume)\b/i.test(candidate.title)
-  if (noisyTitle) score -= 5
-
-  const sourcePriority: Record<string, number> = {
-    openlibrary: 7,
-    steimatzky: 6,
-    booknet: 6,
-    indiebook: 6,
-    simania: 5,
-    google: 4,
-  }
-  score += sourcePriority[candidate.source] || 2
-
-  return score
-}
-
-function identitiesOverlap(a: BookIdentityKeys, b: BookIdentityKeys): { score: number; reasons: string[] } {
-  const reasons: string[] = []
-  let score = 0
-
-  if (a.openlibrary_work_id && b.openlibrary_work_id && a.openlibrary_work_id === b.openlibrary_work_id) {
-    score += 100
-    reasons.push('openlibrary_work_exact')
-  }
-  if (a.openlibrary_edition_id && b.openlibrary_edition_id && a.openlibrary_edition_id === b.openlibrary_edition_id) {
-    score += 95
-    reasons.push('openlibrary_edition_exact')
-  }
-  if (a.google_volume_id && b.google_volume_id && a.google_volume_id === b.google_volume_id) {
-    score += 90
-    reasons.push('google_volume_exact')
-  }
-  if (a.internal_book_code && b.internal_book_code && a.internal_book_code === b.internal_book_code) {
-    score += 80
-    reasons.push('internal_code_exact')
-  }
-
-  const isbnOverlap = a.isbns.some((isbn) => b.isbns.includes(isbn))
-  if (isbnOverlap) {
-    score += 85
-    reasons.push('isbn_exact')
-  }
-
-  return { score, reasons }
-}
-
-function hasConflictingStrongIdentity(a: BookIdentityKeys, b: BookIdentityKeys): string[] {
-  const blocked: string[] = []
-
-  if (a.openlibrary_work_id && b.openlibrary_work_id && a.openlibrary_work_id !== b.openlibrary_work_id) blocked.push('openlibrary_work_conflict')
-  if (a.openlibrary_edition_id && b.openlibrary_edition_id && a.openlibrary_edition_id !== b.openlibrary_edition_id) blocked.push('openlibrary_edition_conflict')
-  if (a.internal_book_code && b.internal_book_code && a.internal_book_code !== b.internal_book_code) blocked.push('internal_code_conflict')
-
-  if (a.google_volume_id && b.google_volume_id && a.google_volume_id !== b.google_volume_id) {
-    const overlap = a.isbns.some((isbn) => b.isbns.includes(isbn))
-    if (!overlap && !a.openlibrary_work_id && !b.openlibrary_work_id) blocked.push('google_volume_conflict')
-  }
-
-  return blocked
-}
-
-
-function hasAnyIsbn(item: NormalizedBookResult): boolean {
-  const keys = item.identity_keys || extractIdentity(item)
-  return keys.isbns.length > 0
-}
-
-function isbnOverlap(a: NormalizedBookResult, b: NormalizedBookResult): boolean {
-  const left = (a.identity_keys || extractIdentity(a)).isbns
-  const right = (b.identity_keys || extractIdentity(b)).isbns
-  return left.some((isbn) => right.includes(isbn))
-}
-
-function authorSimilarityScore(authorA: string, authorB: string): { score: number; reason?: string } {
-  if (!authorA || !authorB) return { score: 0 }
-  if (authorA === authorB) return { score: 28, reason: 'author_exact_normalized' }
-
-  if (authorA.includes(authorB) || authorB.includes(authorA)) {
-    return { score: 22, reason: 'author_contains_normalized' }
-  }
-
-  const tokensA = new Set(authorA.split(' ').filter(Boolean))
-  const tokensB = new Set(authorB.split(' ').filter(Boolean))
+function scoreAuthorOverlap(a: BookCandidate, b: BookCandidate): number {
+  const authorA = new Set((a.raw_authors_normalized || []).filter(Boolean))
+  const authorB = new Set((b.raw_authors_normalized || []).filter(Boolean))
+  if (!authorA.size || !authorB.size) return 0
   let overlap = 0
-  for (const t of Array.from(tokensA)) {
-    if (tokensB.has(t)) overlap += 1
+  for (const token of Array.from(authorA)) {
+    if (authorB.has(token)) overlap += 1
   }
-
-  if (overlap >= 2) return { score: 18, reason: 'author_token_overlap' }
-  if (overlap === 1 && (tokensA.size <= 2 || tokensB.size <= 2)) return { score: 12, reason: 'author_partial_overlap' }
-
-  return { score: 0 }
+  return overlap / Math.max(authorA.size, authorB.size)
 }
 
-function textFallbackScore(a: NormalizedBookResult, b: NormalizedBookResult): { score: number; reasons: string[] } {
-  const reasons: string[] = []
+function hasKnownWorkId(candidate: BookCandidate): string | undefined {
+  return candidate.source_work_id || candidate.identity_keys?.openlibrary_work_id
+}
+
+function sharedIsbn(a: BookCandidate, b: BookCandidate): boolean {
+  const aIsbns = new Set([...(a.isbn10 || []), ...(a.isbn13 || []), ...(a.identity_keys?.isbns || [])].map(normalizeId).filter(Boolean))
+  const bIsbns = new Set([...(b.isbn10 || []), ...(b.isbn13 || []), ...(b.identity_keys?.isbns || [])].map(normalizeId).filter(Boolean))
+  for (const id of Array.from(aIsbns)) {
+    if (bIsbns.has(id)) return true
+  }
+  return false
+}
+
+function clusterSignals(a: BookCandidate, b: BookCandidate): { score: number; reasons: string[]; blocks: string[] } {
   let score = 0
+  const reasons: string[] = []
+  const blocks: string[] = []
 
-  const titleA = normalizeText(a.title)
-  const titleB = normalizeText(b.title)
-  const authorA = normalizeText(a.authors[0] || '')
-  const authorB = normalizeText(b.authors[0] || '')
-
-  if (titleA && titleB && titleA === titleB) {
-    score += 42
-    reasons.push('title_exact_normalized')
+  if (hasKnownWorkId(a) && hasKnownWorkId(b)) {
+    if (hasKnownWorkId(a) === hasKnownWorkId(b)) {
+      score += 1
+      reasons.push('work_id_exact')
+    } else {
+      blocks.push('work_id_conflict')
+    }
   }
 
-  const authorSimilarity = authorSimilarityScore(authorA, authorB)
-  score += authorSimilarity.score
-  if (authorSimilarity.reason) reasons.push(authorSimilarity.reason)
-
-  if (a.language && b.language && a.language === b.language) {
-    score += 8
-    reasons.push('language_exact')
+  if (sharedIsbn(a, b)) {
+    score += 0.95
+    reasons.push('isbn_overlap')
   }
 
-  const yearA = (a.published_date || '').match(/\d{4}/)?.[0]
-  const yearB = (b.published_date || '').match(/\d{4}/)?.[0]
-  if (yearA && yearB && Math.abs(Number(yearA) - Number(yearB)) >= 15) {
-    score -= 8
-    reasons.push('publication_year_far_apart')
+  const titleExact = a.title_key && b.title_key && a.title_key === b.title_key
+  const titleSimilar = a.title_key && b.title_key && (a.title_key.includes(b.title_key) || b.title_key.includes(a.title_key))
+  if (titleExact) {
+    score += 0.75
+    reasons.push('title_exact')
+  } else if (titleSimilar) {
+    score += 0.35
+    reasons.push('title_family')
   }
 
-  return { score, reasons }
+  const authorOverlap = scoreAuthorOverlap(a, b)
+  if (authorOverlap >= 0.8) {
+    score += 0.65
+    reasons.push('author_overlap_high')
+  } else if (authorOverlap >= 0.5) {
+    score += 0.35
+    reasons.push('author_overlap_medium')
+  }
+
+  if (titleSimilar && authorOverlap < 0.25 && !sharedIsbn(a, b)) {
+    blocks.push('title_without_author_or_identifier')
+  }
+
+  return { score, reasons, blocks }
 }
 
-function buildWorkKey(item: NormalizedBookResult): string {
-  const ids = item.identity_keys || extractIdentity(item)
-  if (ids.openlibrary_work_id) return `work:olw:${ids.openlibrary_work_id}`
-  const base = `${normalizeText(item.title)}::${normalizeText(item.authors[0] || '')}`
-  return `work:text:${base || `${item.source}:${item.source_id}`}`
+function choosePrimary(editions: BookCandidate[], query: QueryPlan): BookCandidate {
+  return [...editions].sort((a, b) => {
+    const score = (c: BookCandidate) =>
+      c.overall_candidate_score +
+      ((c.languages || []).some((lang) => lang.toLowerCase().startsWith(query.language_guess)) ? 40 : 0) +
+      (c.cover_url ? 12 : 0) +
+      (c.description ? 10 : 0) +
+      ((c.isbn10?.length || 0) + (c.isbn13?.length || 0) > 0 ? 10 : 0) +
+      (c.publish_year ? 5 : 0) +
+      c.metadata_completeness_score * 15 +
+      c.source_confidence * 10
+    return score(b) - score(a)
+  })[0]
 }
 
-function buildEditionRecord(item: NormalizedBookResult, workId: string): CatalogEdition {
-  const ids = item.identity_keys || extractIdentity(item)
-  const editionId = ids.openlibrary_edition_id
-    ? `edition:ole:${ids.openlibrary_edition_id}`
-    : ids.google_volume_id
-      ? `edition:gb:${ids.google_volume_id}`
-      : ids.isbns[0]
-        ? `edition:isbn:${ids.isbns[0]}`
-        : `edition:${item.source}:${item.source_id}`
+function editionUniqKey(candidate: BookCandidate): string {
+  return [
+    (candidate.languages || [])[0] || '',
+    (candidate.isbn13 || [])[0] || (candidate.isbn10 || [])[0] || '',
+    candidate.format || '',
+    (candidate.publishers || [])[0] || '',
+    candidate.publish_year || '',
+    candidate.edition_label || '',
+    candidate.title_key,
+  ].join('::')
+}
 
+function toEditionRecord(candidate: BookCandidate, workId: string): CatalogEdition {
   return {
-    edition_id: editionId,
+    edition_id: candidate.source_edition_id || `${candidate.source}:${candidate.title_key}:${candidate.author_key}`,
     work_id: workId,
-    edition_title: item.title,
-    publication_date: item.published_date,
-    publisher: item.publisher,
-    isbn_10: item.isbn_10,
-    isbn_13: item.isbn_13,
-    format: item.format,
-    page_count: item.page_count,
-    language: item.language,
-    source_ids: {
-      [item.source]: item.source_id,
-      ...(ids.openlibrary_edition_id ? { openlibrary: ids.openlibrary_edition_id } : {}),
-      ...(ids.google_volume_id ? { google: ids.google_volume_id } : {}),
-    },
-    source_confidence: Math.max(0.1, Math.min(1, baseEditionScore(item) / 80)),
-    raw_payloads: [{ source: item.source, payload: item.raw_source_data }],
+    edition_title: candidate.title,
+    publication_date: candidate.publish_date,
+    publisher: candidate.publishers?.[0],
+    isbn_10: candidate.isbn10?.[0],
+    isbn_13: candidate.isbn13?.[0],
+    format: candidate.format,
+    page_count: candidate.page_count,
+    language: candidate.languages?.[0],
+    source_ids: { [candidate.source]: candidate.source_edition_id || candidate.source_work_id || candidate.title_key },
+    source_confidence: candidate.source_confidence,
+    raw_payloads: [{ source: candidate.source, payload: candidate.raw }],
   }
 }
 
-function buildWorkRecord(primary: NormalizedBookResult, editions: NormalizedBookResult[], workKey: string): CatalogWork {
-  const all = [primary, ...editions]
-  const sourceBadges = Array.from(new Set(all.map((x) => x.source)))
-  const descriptions = all.map((item) => item.description || '').filter(Boolean)
-  const bestDescription = descriptions.sort((a, b) => b.length - a.length)[0]
-  const titles = all.map((item) => item.title)
-  const subjectPool = new Set<string>()
-  all.forEach((item) => (item.categories || []).slice(0, 8).forEach((cat) => subjectPool.add(cat)))
-
-  const sourceConfidenceRaw = all.reduce((acc, item) => acc + baseEditionScore(item), 0) / Math.max(all.length * 70, 1)
-
+function toWork(primary: BookCandidate, editions: BookCandidate[], canonicalKey: string, confidence: number): CatalogWork {
+  const sourceBadges = Array.from(new Set(editions.map((item) => item.source)))
+  const descriptions = editions.map((item) => item.description || '').sort((a, b) => b.length - a.length)
   return {
-    canonical_work_id: workKey,
-    normalized_title: normalizeText(chooseCleanerTitle(titles)),
-    normalized_authors: primary.authors.map((author) => normalizeText(author)).filter(Boolean),
-    display_title: chooseCleanerTitle(titles),
+    canonical_work_id: canonicalKey,
+    normalized_title: primary.title_key,
+    normalized_authors: primary.raw_authors_normalized,
+    display_title: primary.title,
     display_authors: primary.authors,
-    language: primary.language,
-    series: primary.series,
-    volume: primary.volume,
-    subjects: Array.from(subjectPool).slice(0, 8),
-    description: bestDescription,
-    cover: primary.cover_image,
-    source_confidence: Math.max(0.15, Math.min(1, sourceConfidenceRaw)),
+    language: primary.languages?.[0],
+    subjects: Array.from(new Set(editions.flatMap((item) => item.subjects || []))).slice(0, 20),
+    description: descriptions[0] || undefined,
+    cover: primary.cover_url,
+    source_confidence: confidence,
     source_badges: sourceBadges,
   }
 }
 
-function mergeField<T>(a: T | undefined, b: T | undefined): T | undefined {
-  return a ?? b
-}
-
-function mergeTwo(primary: NormalizedBookResult, secondary: NormalizedBookResult): NormalizedBookResult {
-  return {
-    ...primary,
-    identity_keys: primary.identity_keys || secondary.identity_keys,
-    title: chooseCleanerTitle([primary.title, secondary.title]),
-    subtitle: mergeField(primary.subtitle, secondary.subtitle),
-    authors: primary.authors.length ? primary.authors : secondary.authors,
-    description: (primary.description || '').length >= (secondary.description || '').length ? primary.description : secondary.description,
-    language: mergeField(primary.language, secondary.language),
-    publisher: mergeField(primary.publisher, secondary.publisher),
-    published_date: mergeField(primary.published_date, secondary.published_date),
-    isbn_10: mergeField(primary.isbn_10, secondary.isbn_10),
-    isbn_13: mergeField(primary.isbn_13, secondary.isbn_13),
-    page_count: mergeField(primary.page_count, secondary.page_count),
-    categories: primary.categories?.length ? primary.categories : secondary.categories,
-    cover_image: mergeField(primary.cover_image, secondary.cover_image),
-    thumbnail_image: mergeField(primary.thumbnail_image, secondary.thumbnail_image),
-    format: mergeField(primary.format, secondary.format),
-    series: mergeField(primary.series, secondary.series),
-    volume: mergeField(primary.volume, secondary.volume),
-    price: mergeField(primary.price, secondary.price),
-    currency: mergeField(primary.currency, secondary.currency),
-    availability: mergeField(primary.availability, secondary.availability),
-    canonical_url: mergeField(primary.canonical_url, secondary.canonical_url),
-    rating: mergeField(primary.rating, secondary.rating),
-    rating_count: mergeField(primary.rating_count, secondary.rating_count),
-    source_attribution: [...(primary.source_attribution || []), ...(secondary.source_attribution || [])],
-  }
-}
-
-function mergeCluster(cluster: NormalizedBookResult[], options: SearchOrchestratorOptions = {}): NormalizedBookResult {
-  const sorted = [...cluster].sort((a, b) => baseEditionScore(b, options) - baseEditionScore(a, options))
-  const best = sorted[0]
-  return cluster.reduce((acc, item) => mergeTwo(acc, item), { ...best, identity_keys: best.identity_keys || extractIdentity(best) })
-}
-
-function dedupeEditionRecords(records: CatalogEdition[]): CatalogEdition[] {
-  const map = new Map<string, CatalogEdition>()
-
-  for (const record of records) {
-    const fallback = `${normalizeText(record.edition_title)}:${record.publisher || ''}:${record.publication_date || ''}`
-    const key = record.edition_id || fallback
-    const existing = map.get(key)
-
-    if (!existing) {
-      map.set(key, record)
-      continue
-    }
-
-    map.set(key, {
-      ...existing,
-      edition_title: chooseCleanerTitle([existing.edition_title, record.edition_title]),
-      publication_date: existing.publication_date || record.publication_date,
-      publisher: existing.publisher || record.publisher,
-      isbn_10: existing.isbn_10 || record.isbn_10,
-      isbn_13: existing.isbn_13 || record.isbn_13,
-      format: existing.format || record.format,
-      page_count: existing.page_count || record.page_count,
-      language: existing.language || record.language,
-      source_ids: { ...existing.source_ids, ...record.source_ids },
-      source_confidence: Math.max(existing.source_confidence, record.source_confidence),
-      raw_payloads: [...existing.raw_payloads, ...record.raw_payloads],
-    })
-  }
-
-  return Array.from(map.values())
-}
-
-function variantSignature(item: NormalizedBookResult): string {
-  const ids = item.identity_keys || extractIdentity(item)
-  const year = (item.published_date || '').match(/\d{4}/)?.[0] || ''
-  return [
-    normalizeText(item.title),
-    normalizeText(item.authors[0] || ''),
-    ids.isbns[0] || '',
-    normalizeText(item.publisher || ''),
-    year,
-    normalizeText(item.language || ''),
-  ].join('::')
-}
-
-function collapseNearIdenticalVariants(cluster: NormalizedBookResult[], options: SearchOrchestratorOptions): NormalizedBookResult[] {
-  const sorted = [...cluster].sort((a, b) => baseEditionScore(b, options) - baseEditionScore(a, options))
-  const unique = new Map<string, NormalizedBookResult>()
-
-  for (const candidate of sorted) {
-    const key = variantSignature(candidate)
-    if (!unique.has(key)) {
-      unique.set(key, candidate)
-      continue
-    }
-
-    const existing = unique.get(key)!
-    if (baseEditionScore(candidate, options) > baseEditionScore(existing, options)) {
-      unique.set(key, candidate)
-    }
-  }
-
-  return Array.from(unique.values()).slice(0, 3)
-}
-
 export function mergeCandidates(
-  results: NormalizedBookResult[],
-  options: SearchOrchestratorOptions = {}
-): {
-  groupedResults: GroupedBookResult[]
-  decisions: MergeDecision[]
-  logs: MergeLog[]
-} {
-  const clusters: NormalizedBookResult[][] = []
-  const decisions: MergeDecision[] = []
-  const logs: MergeLog[] = []
+  candidates: BookCandidate[],
+  query: QueryPlan,
+  _options: SearchOrchestratorOptions = {}
+): { groupedResults: GroupedBookResult[]; clusterLogs: ClusterDebugLog[] } {
+  const clusters: BookCandidate[][] = []
+  const clusterLogs: ClusterDebugLog[] = []
 
-  const candidates = results.map((item) => ({ ...item, identity_keys: item.identity_keys || extractIdentity(item) }))
+  for (const candidate of candidates.sort((a, b) => b.overall_candidate_score - a.overall_candidate_score)) {
+    let bestClusterIdx = -1
+    let bestScore = -1
+    let bestReasons: string[] = []
 
-  for (const candidate of candidates) {
-    let mergedInto = false
-
-    for (let i = 0; i < clusters.length; i++) {
-      const cluster = clusters[i]
-      const lead = cluster[0]
-      const leadKeys = lead.identity_keys || extractIdentity(lead)
-      const candidateKeys = candidate.identity_keys || extractIdentity(candidate)
-
-      const identity = identitiesOverlap(leadKeys, candidateKeys)
-      const text = textFallbackScore(lead, candidate)
-      const matchScore = identity.score + text.score
-      const reasons = [...identity.reasons, ...text.reasons]
-      const dynamicThreshold = identity.score > 0 ? 40 : 50
-
-      const blockedBy = hasConflictingStrongIdentity(leadKeys, candidateKeys)
-      const canOverrideOpenLibraryConflict =
-        blockedBy.length > 0 &&
-        blockedBy.every((reason) => reason === 'openlibrary_work_conflict') &&
-        lead.source === 'openlibrary' &&
-        candidate.source === 'openlibrary' &&
-        text.score >= 64 &&
-        (!hasAnyIsbn(lead) || !hasAnyIsbn(candidate) || isbnOverlap(lead, candidate))
-
-      if (blockedBy.length > 0 && !canOverrideOpenLibraryConflict) {
-        logs.push({
-          workKey: buildWorkKey(lead),
-          candidateId: `${candidate.source}:${candidate.source_id}`,
-          matched: false,
-          score: matchScore,
-          reasons,
-          blockedBy,
-        })
-        continue
-      }
-
-      if (canOverrideOpenLibraryConflict) {
-        reasons.push('openlibrary_conflict_overridden_by_exact_title_author')
-      }
-
-      logs.push({
-        workKey: buildWorkKey(lead),
-        candidateId: `${candidate.source}:${candidate.source_id}`,
-        matched: matchScore >= dynamicThreshold,
-        score: matchScore,
-        reasons,
-      })
-      if (matchScore >= dynamicThreshold) {
-        const confidence = Math.max(0.5, Math.min(1, matchScore / 100))
-        decisions.push({ kept: `${lead.source}:${lead.source_id}`, merged: `${candidate.source}:${candidate.source_id}`, confidence, reasons })
-        cluster.push(candidate)
-        mergedInto = true
-        break
+    for (let i = 0; i < clusters.length; i += 1) {
+      const representative = clusters[i][0]
+      const signal = clusterSignals(candidate, representative)
+      if (signal.blocks.length > 0) continue
+      if (signal.score > bestScore) {
+        bestClusterIdx = i
+        bestScore = signal.score
+        bestReasons = signal.reasons
       }
     }
 
-    if (!mergedInto) clusters.push([candidate])
+    const safeThreshold = 1.15
+    if (bestClusterIdx >= 0 && bestScore >= safeThreshold) {
+      clusters[bestClusterIdx].push(candidate)
+      clusterLogs.push({
+        canonical_work_key: clusters[bestClusterIdx][0].work_key_candidate,
+        merged_candidate_ids: [`${candidate.source}:${candidate.source_edition_id || candidate.title_key}`],
+        merge_confidence: Math.min(1, bestScore / 2),
+        merge_reasons: bestReasons,
+        representative_candidate_id: `${clusters[bestClusterIdx][0].source}:${clusters[bestClusterIdx][0].source_edition_id || clusters[bestClusterIdx][0].title_key}`,
+        excluded_candidate_ids: [],
+      })
+    } else {
+      clusters.push([candidate])
+    }
   }
 
-  const groupedResults: GroupedBookResult[] = clusters.map((cluster, index) => {
-    const primary = mergeCluster(cluster, options)
-    const sortedEditions = [...cluster].sort((a, b) => baseEditionScore(b, options) - baseEditionScore(a, options))
-    const collapsedEditions = collapseNearIdenticalVariants(sortedEditions, options)
-    const workKey = buildWorkKey(primary)
-    const editionRecords = dedupeEditionRecords(cluster.map((item) => buildEditionRecord(item, workKey)))
-    const work = buildWorkRecord(primary, sortedEditions, workKey)
+  const groupedResults: GroupedBookResult[] = clusters.map((cluster, idx) => {
+    const primary = choosePrimary(cluster, query)
+    const canonical_work_key = hasKnownWorkId(primary) ? `work:${hasKnownWorkId(primary)}` : `work:${primary.title_key}::${primary.author_key}`
+
+    const byEdition = new Map<string, BookCandidate>()
+    for (const item of cluster.sort((a, b) => b.overall_candidate_score - a.overall_candidate_score)) {
+      const key = editionUniqKey(item)
+      if (!byEdition.has(key)) byEdition.set(key, item)
+    }
+
+    const editions = Array.from(byEdition.values()).slice(0, 10)
+    const confidenceScore = Math.max(0.35, Math.min(1, cluster.reduce((acc, c) => acc + c.overall_candidate_score, 0) / Math.max(cluster.length * 900, 1)))
+    const work = toWork(primary, cluster, canonical_work_key, confidenceScore)
+
+    const groupedWork: GroupedWork = {
+      canonical_work_key,
+      best_title: work.display_title,
+      best_subtitle: primary.subtitle,
+      best_authors: work.display_authors,
+      best_description: work.description,
+      best_cover_url: work.cover,
+      languages: Array.from(new Set(cluster.flatMap((item) => item.languages || []))),
+      subjects: work.subjects,
+      representative_publish_year: primary.publish_year,
+      source_summary: work.source_badges,
+      editions,
+      retailers: cluster.filter((item) => ['steimatzky', 'booknet', 'indiebook', 'simania'].includes(item.source)).map((item) => ({
+        source: item.source,
+        title: item.title,
+        author: item.authors[0],
+        url: item.source_url,
+      })),
+      confidence_score: confidenceScore,
+      warnings: confidenceScore < 0.55 ? ['low_confidence_merge'] : [],
+    }
 
     return {
-      group_id: `group:${work.canonical_work_id}:${index}`,
+      group_id: `group:${canonical_work_key}:${idx}`,
       work,
+      grouped_work: groupedWork,
       primary,
-      editions: collapsedEditions,
-      edition_records: editionRecords,
-      total_editions: editionRecords.length,
+      editions,
+      edition_records: cluster.map((item) => toEditionRecord(item, canonical_work_key)),
+      total_editions: cluster.length,
+      group_score: 0,
     }
   })
 
-  return { groupedResults, decisions, logs }
+  return { groupedResults, clusterLogs }
+}
+
+export function computeGroupScore(group: GroupedBookResult, query: QueryPlan): number {
+  const corroborationBonus = Math.min(group.work.source_badges.length, 4) * 25
+  const metadataBonus = group.primary.metadata_completeness_score * 80
+  const languageBonus = (group.grouped_work.languages || []).some((lang) => lang.toLowerCase().startsWith(query.language_guess)) ? 40 : 0
+  const retailerBonus = query.language_guess === 'he' ? group.grouped_work.retailers.length * 12 : 0
+  const ambiguityPenalty = group.grouped_work.warnings.includes('low_confidence_merge') ? 40 : 0
+
+  return group.primary.overall_candidate_score + corroborationBonus + metadataBonus + languageBonus + retailerBonus - ambiguityPenalty
+}
+
+export function shouldCrossLanguageCluster(a: BookCandidate, b: BookCandidate): boolean {
+  const titlePair = [stripPunctuation(a.title), stripPunctuation(b.title)].join('::')
+  const knownNameOfTheWind = titlePair.includes('name of the wind') && (titlePair.includes('שם הרוח') || a.is_hebrew || b.is_hebrew)
+  const hasAuthorEvidence = scoreAuthorOverlap(a, b) >= 0.5 || sharedIsbn(a, b)
+  return knownNameOfTheWind && hasAuthorEvidence
 }

@@ -1,11 +1,12 @@
 import { readCache, writeCache } from './cache'
 import { buildSearchVariants, normalizeQuery } from './normalize'
+import { mergeCandidates, computeGroupScore } from './merge'
 import { getBookProviders } from './providers'
-import { mergeCandidates } from './merge'
-import { rankResults } from './ranker'
-import type { NormalizedBookResult, SearchOrchestratorOptions, SearchResponse } from './types'
+import { rankResults, scoreCandidate } from './ranker'
+import type { BookCandidate, CandidateDebugLog, SearchOrchestratorOptions, SearchResponse } from './types'
 
 const CACHE_TTL_MS = 1000 * 60 * 5
+const DEFAULT_PER_SOURCE_LIMIT = 70
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T> {
   return await Promise.race([
@@ -14,97 +15,119 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T>
   ])
 }
 
+function fanoutStrategies(query: ReturnType<typeof normalizeQuery>): string[] {
+  const variants = buildSearchVariants(query.raw_query)
+  const base = [
+    query.phrase_query,
+    query.stopword_light_query,
+    query.tokenized_query.join(' '),
+    `${query.significant_tokens.join(' ')} ${query.tokenized_query.slice(0, 2).join(' ')}`.trim(),
+    ...query.isbn_candidates,
+    ...variants,
+  ]
+  return Array.from(new Set(base.filter(Boolean))).slice(0, 8)
+}
+
+function sourcePriority(source: BookCandidate['source'], languageGuess: string): number {
+  const base: Record<string, number> = {
+    google: 100,
+    openlibrary: 90,
+    steimatzky: languageGuess === 'he' ? 85 : 55,
+    booknet: languageGuess === 'he' ? 82 : 52,
+    indiebook: languageGuess === 'he' ? 80 : 50,
+    simania: languageGuess === 'he' ? 78 : 48,
+  }
+  return base[source] || 40
+}
+
 export async function searchBooksOrchestrated(query: string, options: SearchOrchestratorOptions = {}): Promise<SearchResponse> {
   const normalized = query.trim()
-  if (!normalized) return { results: [] }
+  const queryPlan = normalizeQuery(normalized)
+  if (!normalized) {
+    return { query: queryPlan, total_raw_candidates: 0, total_grouped_works: 0, results: [] }
+  }
 
-  const cacheKey = `book-search:${normalized}:${options.language || 'all'}`
+  const cacheKey = `book-search:v2:${queryPlan.normalized_query}:${options.language || queryPlan.language_guess}:${options.maxResults || 100}`
   const cached = readCache<SearchResponse>(cacheKey)
   if (cached) return cached
 
-  const variants = buildSearchVariants(normalized)
-  const queryMeta = normalizeQuery(normalized)
-  const phraseQuery = queryMeta.tokens.length > 1 ? `"${queryMeta.raw}"` : undefined
-  const tokenQuery = queryMeta.tokens.join(' ')
-  const queryPlan = [
-    ...[phraseQuery, queryMeta.raw].filter(Boolean),
-    ...[tokenQuery].filter((v) => Boolean(v) && v !== queryMeta.raw),
-    ...variants,
-  ].filter(Boolean) as string[]
-  const plannedVariants = Array.from(new Set(queryPlan))
+  const providers = getBookProviders().filter(({ provider }) => provider.enabled())
+  const orderedProviders = providers.sort((a, b) => b.priority - a.priority)
+  const strategies = fanoutStrategies(queryPlan)
+
   const providerTimings: Record<string, number> = {}
   const providerErrors: Array<{ provider: any; message: string }> = []
+  const rawCandidates: BookCandidate[] = []
 
-  const providers = getBookProviders().sort((a, b) => b.order - a.order)
-  const aggregated: NormalizedBookResult[] = []
-
-  for (const { provider } of providers) {
-    if (!provider.enabled()) continue
-    const start = Date.now()
-
-    for (const variant of plannedVariants.slice(0, 6)) {
+  await Promise.all(
+    orderedProviders.map(async ({ provider }) => {
+      const start = Date.now()
       try {
-        const items = await withTimeout(provider.search(variant, options), options.timeoutMs || 4500)
-        aggregated.push(...items)
+        const tasks = strategies.map((variant) =>
+          withTimeout(provider.search(variant, options.language || queryPlan.language_guess, options.limit || DEFAULT_PER_SOURCE_LIMIT, options), options.timeoutMs || 5000)
+        )
+        const batches = await Promise.allSettled(tasks)
+        batches.forEach((batch) => {
+          if (batch.status === 'fulfilled') rawCandidates.push(...batch.value)
+        })
       } catch (error) {
         providerErrors.push({ provider: provider.name, message: error instanceof Error ? error.message : 'unknown error' })
-        break
       }
-    }
-
-    providerTimings[provider.name] = Date.now() - start
-  }
-
-  const { groupedResults, decisions, logs } = mergeCandidates(aggregated, options)
-  const rankedPrimary = rankResults(
-    groupedResults.map((group) => group.primary),
-    query
+      providerTimings[provider.name] = Date.now() - start
+    })
   )
 
-  const rankingMap = new Map(rankedPrimary.map((entry, index) => [`${entry.source}:${entry.source_id}`, { ...entry, index }]))
+  const scoredCandidates = rawCandidates.map((candidate) => scoreCandidate(candidate, queryPlan, options.language))
+  const rankedCandidates = rankResults(scoredCandidates, query, options.language)
+  const candidateLogs: CandidateDebugLog[] = rankedCandidates.map((candidate) => ({
+    source: candidate.source,
+    source_ids: {
+      work: candidate.source_work_id,
+      edition: candidate.source_edition_id,
+      source: candidate.source_edition_id || candidate.source_work_id || candidate.title_key,
+    },
+    raw_title: candidate.title,
+    normalized_title: candidate.raw_title_normalized,
+    authors: candidate.authors,
+    language: candidate.languages?.[0],
+    isbns: [...(candidate.isbn10 || []), ...(candidate.isbn13 || [])],
+    score_breakdown: {
+      title: candidate.title_match_score,
+      author: candidate.author_match_score,
+      isbn: candidate.isbn_match_score,
+      language: candidate.language_match_score,
+      source: candidate.source_confidence,
+      metadata: candidate.metadata_completeness_score,
+      overall: candidate.overall_candidate_score,
+    },
+    work_key_candidate: candidate.work_key_candidate,
+  }))
+
+  const { groupedResults, clusterLogs } = mergeCandidates(rankedCandidates, queryPlan, options)
+
   const rankedGroups = groupedResults
     .map((group) => {
-      const key = `${group.primary.source}:${group.primary.source_id}`
-      const rankMeta = rankingMap.get(key)
-      const baseScore = rankMeta?._score || 0
-      const groupBonus = Math.min(group.total_editions - 1, 5) * 8
-      const sourceBonus = Math.min(new Set((group.primary.source_attribution || []).map((item) => item.source)).size, 3) * 4
-      const confidencePenalty = baseScore < 120 ? -80 : baseScore < 180 ? -35 : 0
+      const groupScore = computeGroupScore(group, queryPlan) + sourcePriority(group.primary.source, queryPlan.language_guess)
       return {
         ...group,
-        _score: baseScore + groupBonus + sourceBonus + confidencePenalty,
-        _reasons: [...(rankMeta?._reasons || []), 'groupedEditionsBoost'],
+        group_score: groupScore,
       }
     })
-    .sort((a, b) => b._score - a._score)
-    .filter((group, index) => {
-      if (group._score >= 140) return true
-      return index < 2 && group._score >= 100
-    })
-    .slice(0, options.maxResults || 8)
-
-  if (options.debug) {
-    rankedGroups.forEach((group) => {
-      console.info('[books-search] score-debug', {
-        source: group.primary.source,
-        rawTitle: group.primary.title,
-        normalizedTitle: group.work.normalized_title,
-        workKey: group.work.canonical_work_id,
-        score: group._score,
-        scoreBreakdown: group._reasons,
-      })
-    })
-  }
+    .sort((a, b) => b.group_score - a.group_score)
+    .slice(0, Math.min(options.maxResults || 100, 100))
 
   const response: SearchResponse = {
-    results: rankedGroups.map(({ _score, _reasons, ...group }) => group),
+    query: queryPlan,
+    total_raw_candidates: rankedCandidates.length,
+    total_grouped_works: rankedGroups.length,
+    results: rankedGroups,
     debug: options.debug
       ? {
           providerTimings,
           providerErrors,
-          mergeDecisions: decisions,
-          mergeLogs: logs,
-          ranking: rankedGroups.map((entry) => ({ id: entry.group_id, score: entry._score, reasons: entry._reasons })),
+          candidateLogs,
+          clusterLogs,
+          ranking: rankedGroups.map((group) => ({ id: group.group_id, score: group.group_score, reasons: [`best:${group.primary.overall_candidate_score.toFixed(1)}`] })),
         }
       : undefined,
   }

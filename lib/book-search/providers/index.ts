@@ -27,13 +27,13 @@ export const simaniaProvider = createHtmlMetadataProvider({
   searchUrl: (query) => `https://simania.co.il/search.php?search[title]=${encodeURIComponent(query)}`,
 })
 
-export function getBookProviders(): Array<{ provider: BookSearchProvider; order: number }> {
+export function getBookProviders(): Array<{ provider: BookSearchProvider; priority: number }> {
   return [
-    { provider: openLibraryProvider, order: 95 },
-    { provider: googleProvider, order: 85 },
-    { provider: steimatzkyProvider, order: 70 },
-    { provider: booknetProvider, order: 60 },
-    { provider: indiebookProvider, order: 50 },
-    { provider: simaniaProvider, order: 40 },
+    { provider: googleProvider, priority: 100 },
+    { provider: openLibraryProvider, priority: 90 },
+    { provider: steimatzkyProvider, priority: 80 },
+    { provider: booknetProvider, priority: 75 },
+    { provider: indiebookProvider, priority: 70 },
+    { provider: simaniaProvider, priority: 65 },
   ]
 }
