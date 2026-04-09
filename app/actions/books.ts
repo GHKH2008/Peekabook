@@ -3,7 +3,8 @@
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
 import { revalidatePath } from 'next/cache'
-
+import { searchBooksSequential } from '@/lib/book-search/orchestrator'
+import type { EnglishBook } from '@/lib/book-search/types'
 
 export type BookActionResult = {
   success: boolean
@@ -17,6 +18,142 @@ type CustomBookInput = {
   summary?: string
   publisher?: string
   publishedDate?: string
+}
+
+type SearchBookInput = {
+  title: string
+  series?: string
+  authors?: string[]
+  summary?: string
+  genres?: string[]
+  isbn?: string
+  isbn13?: string
+  language?: string
+  cover?: string
+  publisher?: string
+  publishedDate?: string
+  pageCount?: number
+  sourceRefs?: Record<string, string | undefined>
+  sourceTrace?: string[]
+}
+
+export async function searchBooks(query: string): Promise<EnglishBook[]> {
+  await requireAuth()
+
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  return searchBooksSequential(trimmed)
+}
+
+export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<BookActionResult> {
+  const user = await requireAuth()
+
+  const title = data.title.trim()
+  if (!title) {
+    return { success: false, error: 'Title is required' }
+  }
+
+  const authors = (data.authors ?? []).map((a) => a.trim()).filter(Boolean)
+  const primaryAuthor = authors[0]?.toLowerCase() ?? null
+
+  const existing = await sql`
+    SELECT id
+    FROM books
+    WHERE user_id = ${user.id}
+      AND (
+        (${data.isbn13 || null} IS NOT NULL AND isbn_13 = ${data.isbn13 || null})
+        OR (${data.isbn || null} IS NOT NULL AND isbn = ${data.isbn || null})
+        OR (
+          lower(title) = ${title.toLowerCase()}
+          AND (
+            (${primaryAuthor} IS NULL AND (authors IS NULL OR array_length(authors, 1) = 0))
+            OR (${primaryAuthor} IS NOT NULL AND lower(COALESCE(authors[1], '')) = ${primaryAuthor})
+          )
+        )
+      )
+    LIMIT 1
+  `
+
+  if (existing.length > 0) {
+    return { success: false, error: 'A matching book already exists in your library' }
+  }
+
+  let result: Array<{ id: number }> = []
+
+  try {
+    result = await sql`
+      INSERT INTO books (
+        user_id,
+        title,
+        authors,
+        summary,
+        genres,
+        isbn,
+        isbn_13,
+        language,
+        cover_url,
+        publisher,
+        published_date,
+        page_count,
+        source_refs,
+        source_trace
+      ) VALUES (
+        ${user.id},
+        ${title},
+        ${authors.length ? authors : null},
+        ${data.summary?.trim() || null},
+        ${data.genres?.length ? data.genres : null},
+        ${data.isbn?.trim() || null},
+        ${data.isbn13?.trim() || null},
+        ${data.language?.trim() || null},
+        ${data.cover?.trim() || null},
+        ${data.publisher?.trim() || null},
+        ${data.publishedDate?.trim() || null},
+        ${data.pageCount || null},
+        ${data.sourceRefs ? JSON.stringify(data.sourceRefs) : null}::jsonb,
+        ${data.sourceTrace?.length ? data.sourceTrace : null}
+      )
+      RETURNING id
+    `
+  } catch {
+    // Backward compatibility for databases that do not yet include source metadata columns.
+    result = await sql`
+      INSERT INTO books (
+        user_id,
+        title,
+        authors,
+        summary,
+        genres,
+        isbn,
+        isbn_13,
+        language,
+        cover_url,
+        publisher,
+        published_date,
+        page_count
+      ) VALUES (
+        ${user.id},
+        ${title},
+        ${authors.length ? authors : null},
+        ${data.summary?.trim() || null},
+        ${data.genres?.length ? data.genres : null},
+        ${data.isbn?.trim() || null},
+        ${data.isbn13?.trim() || null},
+        ${data.language?.trim() || null},
+        ${data.cover?.trim() || null},
+        ${data.publisher?.trim() || null},
+        ${data.publishedDate?.trim() || null},
+        ${data.pageCount || null}
+      )
+      RETURNING id
+    `
+  }
+
+  revalidatePath('/library')
+  revalidatePath('/dashboard')
+
+  return { success: true, bookId: result[0].id }
 }
 
 export async function addCustomBookToLibrary(data: CustomBookInput): Promise<BookActionResult> {
