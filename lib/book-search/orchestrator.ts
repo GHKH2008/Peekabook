@@ -2,11 +2,13 @@ import { readCache, writeCache } from './cache'
 import { buildSearchVariants, normalizeQuery } from './normalize'
 import { mergeCandidates, computeGroupScore } from './merge'
 import { getBookProviders } from './providers'
+import { amazonProvider } from './providers/amazon'
 import { rankResults, scoreCandidate } from './ranker'
 import type { BookCandidate, CandidateDebugLog, SearchOrchestratorOptions, SearchResponse } from './types'
 
 const CACHE_TTL_MS = 1000 * 60 * 5
 const DEFAULT_PER_SOURCE_LIMIT = 70
+const RETAILER_SOURCES = new Set(['steimatzky', 'booknet', 'indiebook', 'simania'])
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T> {
   return await Promise.race([
@@ -32,6 +34,7 @@ function sourcePriority(source: BookCandidate['source'], languageGuess: string):
   const base: Record<string, number> = {
     google: 100,
     openlibrary: 90,
+    amazon: 40,
     steimatzky: languageGuess === 'he' ? 85 : 55,
     booknet: languageGuess === 'he' ? 82 : 52,
     indiebook: languageGuess === 'he' ? 80 : 50,
@@ -78,7 +81,33 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
   )
 
   const scoredCandidates = rawCandidates.map((candidate) => scoreCandidate(candidate, queryPlan, options.language))
-  const rankedCandidates = rankResults(scoredCandidates, query, options.language)
+  const amazonEnrichedCandidates =
+    queryPlan.language_guess === 'en'
+      ? (
+          await Promise.all(
+            scoredCandidates.map(async (candidate) => {
+              const isbn = [...(candidate.isbn13 || []), ...(candidate.isbn10 || [])].find((value) => value?.length === 13 || value?.length === 10)
+              if (!isbn) return null
+              const amazon = await amazonProvider.getEditionDetails(isbn, { ...options, language: options.language || queryPlan.language_guess })
+              if (!amazon) return null
+              return scoreCandidate(
+                {
+                  ...candidate,
+                  source: 'amazon',
+                  source_edition_id: amazon.source_edition_id || `isbn:${isbn}`,
+                  source_url: amazon.source_url,
+                  tags: Array.from(new Set(['amazon', ...(candidate.tags || [])])),
+                  retailer_data: [...(candidate.retailer_data || []), { source: 'amazon', url: amazon.source_url, isbn }],
+                  source_attribution: [...(candidate.source_attribution || []), ...(amazon.source_attribution || [])],
+                },
+                queryPlan,
+                options.language
+              )
+            })
+          )
+        ).filter((candidate): candidate is BookCandidate => Boolean(candidate))
+      : []
+  const rankedCandidates = rankResults([...scoredCandidates, ...amazonEnrichedCandidates], query, options.language)
   const candidateLogs: CandidateDebugLog[] = rankedCandidates.map((candidate) => ({
     source: candidate.source,
     source_ids: {
@@ -98,6 +127,7 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
       language: candidate.language_match_score,
       source: candidate.source_confidence,
       metadata: candidate.metadata_completeness_score,
+      cover: candidate.cover_score || 0,
       overall: candidate.overall_candidate_score,
     },
     work_key_candidate: candidate.work_key_candidate,
@@ -107,7 +137,8 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
 
   const rankedGroups = groupedResults
     .map((group) => {
-      const groupScore = computeGroupScore(group, queryPlan) + sourcePriority(group.primary.source, queryPlan.language_guess)
+      const retailerSupportBonus = group.grouped_work.source_summary.filter((source) => RETAILER_SOURCES.has(source)).length * (queryPlan.language_guess === 'he' ? 16 : 4)
+      const groupScore = computeGroupScore(group, queryPlan) + sourcePriority(group.primary.source, queryPlan.language_guess) + retailerSupportBonus
       return {
         ...group,
         group_score: groupScore,

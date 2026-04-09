@@ -6,6 +6,7 @@ import type { GroupedBookResult, NormalizedBookResult } from '@/lib/book-search/
 export type BookSourceName =
   | 'google'
   | 'openlibrary'
+  | 'amazon'
   | 'steimatzky'
   | 'booknet'
   | 'indiebook'
@@ -36,6 +37,9 @@ export type GoogleBook = {
       isEdition?: boolean
       rankReasons?: string[]
     }
+    retailers?: Array<Record<string, unknown>>
+    topics?: string[]
+    allCoverUrls?: string[]
   }
   volumeInfo: {
     title: string
@@ -1385,7 +1389,7 @@ export async function searchGoogleBooks(query: string, langRestrict?: string): P
     language: langRestrict,
     timeoutMs: Number(process.env.BOOK_PROVIDER_TIMEOUT_MS || 4500),
     debug: debugEnabled,
-    maxResults: 8,
+    maxResults: 100,
   })
 
   if (debugEnabled && response.debug) {
@@ -1470,6 +1474,7 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
   const displayAuthors = group.work.display_authors?.length ? group.work.display_authors : primary.volumeInfo.authors
   const displayDescription = group.work.description || primary.volumeInfo.description
   const displayCategories = group.work.subjects?.length ? group.work.subjects : primary.volumeInfo.categories
+  const mergedTopics = Array.from(new Set([...(group.grouped_work.tags || []), ...(displayCategories || [])])).slice(0, 30)
 
   return {
     ...primary,
@@ -1482,6 +1487,9 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
         reasons: [`work:${group.work.canonical_work_id}`, `confidence:${group.work.source_confidence.toFixed(2)}`],
         confidence: group.work.source_confidence,
       },
+      retailers: group.grouped_work.retailers,
+      topics: mergedTopics,
+      allCoverUrls: group.grouped_work.all_cover_urls || [],
     },
     volumeInfo: {
       ...primary.volumeInfo,

@@ -87,8 +87,9 @@ function choosePrimary(editions: BookCandidate[], query: QueryPlan): BookCandida
   return [...editions].sort((a, b) => {
     const score = (c: BookCandidate) =>
       c.overall_candidate_score +
+      (c.cover_score || 0) * 80 +
       ((c.languages || []).some((lang) => lang.toLowerCase().startsWith(query.language_guess)) ? 40 : 0) +
-      (c.cover_url ? 12 : 0) +
+      ((c.cover_url || (c.cover_urls || []).length > 0) ? 20 : 0) +
       (c.description ? 10 : 0) +
       ((c.isbn10?.length || 0) + (c.isbn13?.length || 0) > 0 ? 10 : 0) +
       (c.publish_year ? 5 : 0) +
@@ -131,6 +132,7 @@ function toEditionRecord(candidate: BookCandidate, workId: string): CatalogEditi
 function toWork(primary: BookCandidate, editions: BookCandidate[], canonicalKey: string, confidence: number): CatalogWork {
   const sourceBadges = Array.from(new Set(editions.map((item) => item.source)))
   const descriptions = editions.map((item) => item.description || '').sort((a, b) => b.length - a.length)
+  const mergedSubjects = Array.from(new Set(editions.flatMap((item) => item.subjects || []))).slice(0, 30)
   return {
     canonical_work_id: canonicalKey,
     normalized_title: primary.title_key,
@@ -138,7 +140,7 @@ function toWork(primary: BookCandidate, editions: BookCandidate[], canonicalKey:
     display_title: primary.title,
     display_authors: primary.authors,
     language: primary.languages?.[0],
-    subjects: Array.from(new Set(editions.flatMap((item) => item.subjects || []))).slice(0, 20),
+    subjects: mergedSubjects,
     description: descriptions[0] || undefined,
     cover: primary.cover_url,
     source_confidence: confidence,
@@ -207,8 +209,20 @@ export function mergeCandidates(
       best_authors: work.display_authors,
       best_description: work.description,
       best_cover_url: work.cover,
+      all_cover_urls: Array.from(new Set(cluster.flatMap((item) => [item.cover_url, ...(item.cover_urls || [])].filter(Boolean) as string[]))),
       languages: Array.from(new Set(cluster.flatMap((item) => item.languages || []))),
       subjects: work.subjects,
+      tags: Array.from(
+        cluster
+          .flatMap((item) => [...(item.tags || []), ...(item.subjects || [])])
+          .reduce((acc, tag) => {
+            const key = stripPunctuation(tag)
+            const label = tag.trim()
+            if (key && label && !acc.has(key)) acc.set(key, label)
+            return acc
+          }, new Map<string, string>())
+          .values()
+      ).slice(0, 50),
       representative_publish_year: primary.publish_year,
       source_summary: work.source_badges,
       editions,
@@ -240,11 +254,13 @@ export function mergeCandidates(
 export function computeGroupScore(group: GroupedBookResult, query: QueryPlan): number {
   const corroborationBonus = Math.min(group.work.source_badges.length, 4) * 25
   const metadataBonus = group.primary.metadata_completeness_score * 80
+  const coverBonus = (group.primary.cover_score || 0) * 100 + (group.grouped_work.best_cover_url ? 25 : 0)
   const languageBonus = (group.grouped_work.languages || []).some((lang) => lang.toLowerCase().startsWith(query.language_guess)) ? 40 : 0
-  const retailerBonus = query.language_guess === 'he' ? group.grouped_work.retailers.length * 12 : 0
+  const hebrewBonus = query.language_guess === 'he' ? group.grouped_work.retailers.length * 16 : 0
+  const amazonBonus = query.language_guess === 'en' && group.grouped_work.source_summary.includes('amazon') ? 14 : 0
   const ambiguityPenalty = group.grouped_work.warnings.includes('low_confidence_merge') ? 40 : 0
 
-  return group.primary.overall_candidate_score + corroborationBonus + metadataBonus + languageBonus + retailerBonus - ambiguityPenalty
+  return group.primary.overall_candidate_score + corroborationBonus + metadataBonus + coverBonus + languageBonus + hebrewBonus + amazonBonus - ambiguityPenalty
 }
 
 export function shouldCrossLanguageCluster(a: BookCandidate, b: BookCandidate): boolean {

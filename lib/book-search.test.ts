@@ -64,6 +64,7 @@ export function testHebrewTitleWithRetailerEnrichment() {
   const merged = mergeCandidates([openLibrary, retailer], query)
   assert.equal(merged.groupedResults.length, 1)
   assert.ok(merged.groupedResults[0].grouped_work.retailers.length >= 1)
+  assert.equal(merged.groupedResults[0].primary.source, 'openlibrary')
 }
 
 export function testEnglishHebrewCrossLinkEvidenceGuarded() {
@@ -88,6 +89,34 @@ export function testNoisyKeywordDoesNotBeatSpecificTitle() {
   assert.equal(ranked[0].title, 'He Who Fights with Monsters')
 }
 
+export function testCoverPreferredForPrimaryEdition() {
+  const query = normalizeQuery('unsouled')
+  const noCover = scoreCandidate(c({ title: 'Unsouled', authors: ['Will Wight'] }), query)
+  const withCover = scoreCandidate(c({ title: 'Unsouled', authors: ['Will Wight'], cover_url: 'https://img.example/1200.jpg' }), query)
+  const merged = mergeCandidates([noCover, withCover], query)
+  assert.equal(merged.groupedResults.length, 1)
+  assert.equal(merged.groupedResults[0].primary.cover_url, 'https://img.example/1200.jpg')
+}
+
+export function testTagMergingAcrossSources() {
+  const query = normalizeQuery('the name of the wind')
+  const a = scoreCandidate(c({ source: 'google', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], subjects: ['Fantasy'], tags: ['Epic Fantasy'] }), query)
+  const b = scoreCandidate(c({ source: 'openlibrary', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], subjects: ['fantasy'], tags: ['epic fantasy'] }), query)
+  const merged = mergeCandidates([a, b], query)
+  assert.equal(merged.groupedResults.length, 1)
+  assert.ok((merged.groupedResults[0].grouped_work.tags || []).includes('Fantasy'))
+  assert.ok((merged.groupedResults[0].grouped_work.tags || []).includes('Epic Fantasy'))
+}
+
+export function testAmazonEnrichmentStaysInSingleWork() {
+  const query = normalizeQuery('unsouled')
+  const google = scoreCandidate(c({ source: 'google', title: 'Unsouled', authors: ['Will Wight'], isbn13: ['9780989671769'] }), query)
+  const amazon = scoreCandidate(c({ source: 'amazon', title: 'Unsouled', authors: ['Will Wight'], isbn13: ['9780989671769'], tags: ['amazon'] }), query)
+  const merged = mergeCandidates([google, amazon], query)
+  assert.equal(merged.groupedResults.length, 1)
+  assert.ok(merged.groupedResults[0].grouped_work.source_summary.includes('amazon'))
+}
+
 export function testTranslationSafetyRequireEvidence() {
   const query = normalizeQuery('name of the wind')
   const original = scoreCandidate(c({ source: 'google', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'] }), query)
@@ -104,6 +133,9 @@ export function runBookSearchTests() {
   testEnglishHebrewCrossLinkEvidenceGuarded()
   testIsbnDirectMatch()
   testNoisyKeywordDoesNotBeatSpecificTitle()
+  testCoverPreferredForPrimaryEdition()
+  testTagMergingAcrossSources()
+  testAmazonEnrichmentStaysInSingleWork()
   testTranslationSafetyRequireEvidence()
 }
 

@@ -4,6 +4,7 @@ import type { BookCandidate, QueryPlan } from './types'
 const SOURCE_TRUST: Record<string, number> = {
   google: 0.84,
   openlibrary: 0.86,
+  amazon: 0.66,
   steimatzky: 0.74,
   booknet: 0.72,
   indiebook: 0.7,
@@ -39,6 +40,17 @@ function tokenContainmentScore(queryTokens: string[], title: string): number {
   if (matched === queryTokens.length) return 0.92
   if (matched >= Math.max(1, queryTokens.length - 1)) return 0.76
   return matched / Math.max(queryTokens.length, 1)
+}
+
+function computeCoverScore(candidate: BookCandidate): number {
+  if (!candidate.cover_url && !(candidate.cover_urls || []).length) return 0
+  const candidates = [candidate.cover_url, ...(candidate.cover_urls || [])].filter(Boolean) as string[]
+  const best = candidates.reduce((acc, url) => {
+    const sizeMatch = url.match(/(?:[?&](?:w|width|h|height)=|-(\d+)\.(?:jpg|jpeg|png))/i)
+    const size = Number(sizeMatch?.[1] || 0)
+    return Math.max(acc, Number.isFinite(size) ? size : 0)
+  }, 0)
+  return best > 0 ? Math.min(1, 0.55 + best / 1200) : 0.65
 }
 
 export function scoreCandidate(candidate: BookCandidate, queryPlan: QueryPlan, language?: string): BookCandidate {
@@ -77,6 +89,7 @@ export function scoreCandidate(candidate: BookCandidate, queryPlan: QueryPlan, l
     candidate.publishers?.length,
   ].filter(Boolean).length
   const metadataCompleteness = Math.min(1, fieldsPresent / 8)
+  const coverScore = computeCoverScore(candidate)
 
   const retailerMatch = candidate.source === 'steimatzky' || candidate.source === 'booknet' || candidate.source === 'indiebook' || candidate.source === 'simania' ? 1 : 0
   const sourceConfidence = SOURCE_TRUST[candidate.source] || 0.55
@@ -92,6 +105,7 @@ export function scoreCandidate(candidate: BookCandidate, queryPlan: QueryPlan, l
     titleMatch * 700 +
     authorMatch * 180 +
     languageMatch * 120 +
+    coverScore * 135 +
     metadataCompleteness * 90 +
     sourceConfidence * 80 +
     retailerMatch * 20 -
@@ -106,6 +120,7 @@ export function scoreCandidate(candidate: BookCandidate, queryPlan: QueryPlan, l
     language_match_score: languageMatch,
     retailer_match_score: retailerMatch,
     metadata_completeness_score: metadataCompleteness,
+    cover_score: coverScore,
     source_confidence: sourceConfidence,
     overall_candidate_score: overall,
   }
