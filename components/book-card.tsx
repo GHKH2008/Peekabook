@@ -67,6 +67,16 @@ export function BookCard({
               {book.authors.join(', ')}
             </p>
           )}
+          {book.summary && (
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+              {book.summary}
+            </p>
+          )}
+          {book.publisher && (
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+              {book.publisher}
+            </p>
+          )}
           {showOwner && book.username && (
             <p className="text-xs text-muted-foreground mt-1">
               by @{book.username}
