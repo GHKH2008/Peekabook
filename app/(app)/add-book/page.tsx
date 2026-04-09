@@ -1,0 +1,204 @@
+'use client'
+
+import { useState, useTransition } from 'react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Field, FieldLabel, FieldGroup } from '@/components/ui/field'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Spinner } from '@/components/ui/spinner'
+import { Search, BookOpen, Check } from 'lucide-react'
+import Image from 'next/image'
+import { searchBooks, addBookToLibrary } from '@/app/actions/books'
+import type { GoogleBook } from '@/lib/google-books'
+
+export default function AddBookPage() {
+  const [query, setQuery] = useState('')
+  const [language, setLanguage] = useState<string>('')
+  const [results, setResults] = useState<GoogleBook[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const [addingBookId, setAddingBookId] = useState<string | null>(null)
+  const [addedBooks, setAddedBooks] = useState<Set<string>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSearch(e: React.FormEvent) {
+    e.preventDefault()
+    if (!query.trim()) return
+
+    setIsSearching(true)
+    setError(null)
+    try {
+      const books = await searchBooks(query, language || undefined)
+      setResults(books)
+      if (books.length === 0) {
+        setError('No books found. Try a different search term.')
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to search books'
+      setError(message.includes('rate') || message.includes('429') 
+        ? 'Too many requests. Please wait a moment and try again.' 
+        : 'Failed to search books. Please try again.')
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
+  async function handleAddBook(book: GoogleBook) {
+    setAddingBookId(book.id)
+    try {
+      const result = await addBookToLibrary(book)
+      if (result.success) {
+        setAddedBooks(prev => new Set([...prev, book.id]))
+      } else {
+        setError(result.error || 'Failed to add book')
+      }
+    } catch {
+      setError('Failed to add book. Please try again.')
+    } finally {
+      setAddingBookId(null)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-4xl mx-auto">
+      <div>
+        <h1 className="text-2xl md:text-3xl font-bold text-foreground">Add a Book</h1>
+        <p className="text-muted-foreground">
+          Search Google Books to add to your library
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Search Books</CardTitle>
+          <CardDescription>
+            Search by title, author, or ISBN. Supports English and Hebrew books.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSearch} className="space-y-4">
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="query">Search Query</FieldLabel>
+                <div className="flex gap-2">
+                  <Input
+                    id="query"
+                    placeholder="Enter book title, author, or ISBN..."
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Select value={language} onValueChange={setLanguage}>
+                    <SelectTrigger className="w-[140px]">
+                      <SelectValue placeholder="Any Language" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Any Language</SelectItem>
+                      <SelectItem value="en">English</SelectItem>
+                      <SelectItem value="he">Hebrew</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </Field>
+            </FieldGroup>
+            <Button type="submit" disabled={isSearching || !query.trim()} className="gap-2">
+              {isSearching ? <Spinner className="h-4 w-4" /> : <Search className="h-4 w-4" />}
+              {isSearching ? 'Searching...' : 'Search'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      {error && (
+        <Card className="border-destructive">
+          <CardContent className="py-4">
+            <p className="text-destructive text-sm">{error}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {results.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Search Results</CardTitle>
+            <CardDescription>
+              Found {results.length} books. Click to add to your library.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {results.map((book) => {
+                const isAdded = addedBooks.has(book.id)
+                const isAdding = addingBookId === book.id
+                return (
+                  <div
+                    key={book.id}
+                    className="flex gap-4 p-4 border border-border rounded-lg hover:bg-muted/50 transition-colors"
+                  >
+                    <div className="w-20 h-28 flex-shrink-0 bg-muted rounded overflow-hidden">
+                      {book.volumeInfo.imageLinks?.thumbnail ? (
+                        <Image
+                          src={book.volumeInfo.imageLinks.thumbnail.replace('http://', 'https://')}
+                          alt={book.volumeInfo.title}
+                          width={80}
+                          height={112}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <BookOpen className="h-8 w-8 text-muted-foreground/30" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-medium text-foreground line-clamp-2">
+                        {book.volumeInfo.title}
+                      </h3>
+                      {book.volumeInfo.authors && (
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {book.volumeInfo.authors.join(', ')}
+                        </p>
+                      )}
+                      {book.volumeInfo.publishedDate && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {book.volumeInfo.publishedDate}
+                        </p>
+                      )}
+                      {book.volumeInfo.description && (
+                        <p className="text-sm text-muted-foreground mt-2 line-clamp-2">
+                          {book.volumeInfo.description}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex-shrink-0">
+                      <Button
+                        variant={isAdded ? 'secondary' : 'default'}
+                        size="sm"
+                        disabled={isAdding || isAdded}
+                        onClick={() => handleAddBook(book)}
+                        className="gap-2"
+                      >
+                        {isAdding ? (
+                          <Spinner className="h-4 w-4" />
+                        ) : isAdded ? (
+                          <Check className="h-4 w-4" />
+                        ) : null}
+                        {isAdded ? 'Added' : isAdding ? 'Adding...' : 'Add'}
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
