@@ -77,7 +77,48 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
   }
 
   const rankedCandidates = rankResults(rawCandidates, query, options.language)
-  const candidateLogs: CandidateDebugLog[] = rankedCandidates.map((candidate) => ({
+  const amazonEnrichedCandidates =
+    queryPlan.language_guess === 'en'
+      ? (
+          await Promise.all(
+            rankedCandidates.map(async (candidate) => {
+              const isbn = [...(candidate.isbn13 || []), ...(candidate.isbn10 || [])].find((value) => value?.length === 13 || value?.length === 10)
+              if (!isbn) return null
+              const amazon = await amazonProvider.getEditionDetails(isbn, { ...options, language: options.language || queryPlan.language_guess })
+              if (!amazon) return null
+
+              return scoreCandidate(
+                {
+                  ...amazon,
+                  title: candidate.title,
+                  subtitle: candidate.subtitle,
+                  authors: candidate.authors,
+                  description: candidate.description,
+                  languages: candidate.languages,
+                  publishers: candidate.publishers,
+                  publish_date: candidate.publish_date,
+                  page_count: candidate.page_count,
+                  isbn10: candidate.isbn10?.length ? candidate.isbn10 : amazon.isbn10,
+                  isbn13: candidate.isbn13?.length ? candidate.isbn13 : amazon.isbn13,
+                  cover_url: candidate.cover_url || amazon.cover_url,
+                  source_attribution: [
+                    ...(candidate.source_attribution || []),
+                    ...(amazon.source_attribution || []),
+                  ],
+                  tags: Array.from(new Set(['amazon', ...(candidate.tags || [])])),
+                },
+                queryPlan,
+                options.language
+              )
+            })
+          )
+        ).filter((candidate): candidate is BookCandidate => Boolean(candidate))
+      : []
+  if (queryPlan.language_guess === 'en') {
+    debugSteps.push(`enrichment:amazon:count=${amazonEnrichedCandidates.length}`)
+  }
+  const allRankedCandidates = rankResults([...rankedCandidates, ...amazonEnrichedCandidates], query, options.language)
+  const candidateLogs: CandidateDebugLog[] = allRankedCandidates.map((candidate) => ({
     source: candidate.source,
     source_ids: {
       work: candidate.source_work_id,
@@ -102,7 +143,7 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
     work_key_candidate: candidate.work_key_candidate,
   }))
 
-  const { groupedResults, clusterLogs } = mergeCandidates(rankedCandidates, queryPlan, options)
+  const { groupedResults, clusterLogs } = mergeCandidates(allRankedCandidates, queryPlan, options)
   const rankedGroups = groupedResults
     .map((group) => ({ ...group, group_score: computeGroupScore(group, queryPlan) }))
     .sort((a, b) => b.group_score - a.group_score)
@@ -110,7 +151,7 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
 
   const response: SearchResponse = {
     query: queryPlan,
-    total_raw_candidates: rankedCandidates.length,
+    total_raw_candidates: allRankedCandidates.length,
     total_grouped_works: rankedGroups.length,
     results: rankedGroups,
     debug: options.debug

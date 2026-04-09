@@ -113,6 +113,15 @@ function testHebrewQueriesPreferHebrewResults() {
   assert.equal(ranked[0].languages?.[0], 'he')
 }
 
+function testAmazonSourceCanCoexistByIsbnIdentity() {
+  const query = normalizeQuery('The Name of the Wind')
+  const amazon = scoreCandidate(c({ source: 'amazon', source_edition_id: 'isbn:9780756404741', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756404741'] }), query)
+  const ol = scoreCandidate(c({ source: 'openlibrary', source_edition_id: 'OLNOW', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756404741'] }), query)
+  const merged = mergeCandidates([amazon, ol], query)
+  assert.equal(merged.groupedResults.length, 1)
+  assert.ok(merged.groupedResults[0].grouped_work.source_summary.includes('amazon'))
+}
+
 export function runBookSearchTests() {
   testSameBookAcrossSourcesMergeCorrectly()
   testSimilarTitlesDoNotMerge()
@@ -124,6 +133,7 @@ export function runBookSearchTests() {
   testBetterCoverReplacesWorse()
   testDuplicatesRemovedProperly()
   testHebrewQueriesPreferHebrewResults()
+  testAmazonSourceCanCoexistByIsbnIdentity()
 }
 
 runBookSearchTests()
