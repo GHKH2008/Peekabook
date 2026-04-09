@@ -113,7 +113,9 @@ export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActi
         publisher,
         published_date,
         page_count,
-        is_adult
+        is_adult,
+        source_refs,
+        source_trace
       ) VALUES (
         ${user.id},
         ${bookData.google_books_id},
@@ -128,7 +130,9 @@ export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActi
         ${bookData.publisher},
         ${bookData.published_date},
         ${bookData.page_count},
-        ${bookData.is_adult}
+        ${bookData.is_adult},
+        ${bookData.source_refs ? JSON.stringify(bookData.source_refs) : null}::jsonb,
+        ${bookData.source_trace}
       )
       RETURNING id
     `
