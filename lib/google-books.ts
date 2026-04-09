@@ -26,6 +26,25 @@ export type GoogleBooksResponse = {
   items?: GoogleBook[]
 }
 
+type OpenLibrarySearchDoc = {
+  key?: string
+  title?: string
+  author_name?: string[]
+  first_sentence?: string | { value?: string }
+  subject?: string[]
+  isbn?: string[]
+  language?: string[]
+  cover_i?: number
+  publisher?: string[]
+  first_publish_year?: number
+  number_of_pages_median?: number
+}
+
+type OpenLibrarySearchResponse = {
+  numFound?: number
+  docs?: OpenLibrarySearchDoc[]
+}
+
 async function fetchWithRetry(
   url: string,
   retries = 2,
@@ -100,11 +119,88 @@ export async function searchGoogleBooks(
     )
 
     const data: GoogleBooksResponse = await response.json()
-    return data.items || []
+    const googleResults = data.items || []
+
+    if (googleResults.length > 0) {
+      return googleResults
+    }
+
+    return searchOpenLibraryBooks(query, langRestrict)
   } catch (error) {
     console.error('Google Books search error:', error)
-    throw new Error('Failed to search Google Books. Please try again in a moment.')
+
+    const fallbackResults = await searchOpenLibraryBooks(query, langRestrict)
+    if (fallbackResults.length > 0) {
+      return fallbackResults
+    }
+
+    throw new Error('Failed to search books right now. Please try again in a moment.')
   }
+}
+
+async function searchOpenLibraryBooks(
+  query: string,
+  langRestrict?: string
+): Promise<GoogleBook[]> {
+  const params = new URLSearchParams({
+    q: query,
+    limit: '12',
+  })
+
+  if (langRestrict) {
+    params.set('language', langRestrict)
+  }
+
+  const response = await fetch(
+    `https://openlibrary.org/search.json?${params.toString()}`
+  )
+
+  if (!response.ok) {
+    return []
+  }
+
+  const data: OpenLibrarySearchResponse = await response.json()
+  const docs = data.docs || []
+
+  return docs
+    .filter((doc) => !!doc.title)
+    .map((doc): GoogleBook => {
+      const isbn10 = doc.isbn?.find((isbn) => isbn.length === 10)
+      const isbn13 = doc.isbn?.find((isbn) => isbn.length === 13)
+      const coverUrl = doc.cover_i
+        ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`
+        : undefined
+
+      return {
+        id: `openlibrary:${doc.key || doc.title}`,
+        volumeInfo: {
+          title: doc.title || 'Unknown title',
+          authors: doc.author_name || [],
+          description:
+            typeof doc.first_sentence === 'string'
+              ? doc.first_sentence
+              : doc.first_sentence?.value,
+          categories: doc.subject?.slice(0, 5),
+          industryIdentifiers: [
+            ...(isbn10 ? [{ type: 'ISBN_10', identifier: isbn10 }] : []),
+            ...(isbn13 ? [{ type: 'ISBN_13', identifier: isbn13 }] : []),
+          ],
+          language: doc.language?.[0],
+          imageLinks: coverUrl
+            ? {
+                thumbnail: coverUrl,
+                smallThumbnail: coverUrl,
+              }
+            : undefined,
+          publisher: doc.publisher?.[0],
+          publishedDate: doc.first_publish_year
+            ? String(doc.first_publish_year)
+            : undefined,
+          pageCount: doc.number_of_pages_median,
+          maturityRating: 'NOT_MATURE',
+        },
+      }
+    })
 }
 
 export function parseGoogleBook(book: GoogleBook) {
