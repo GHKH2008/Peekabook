@@ -67,6 +67,7 @@ export type BookCandidate = {
 
   title: string
   subtitle?: string
+  series?: string
   authors: string[]
   contributors?: string[]
   description?: string
@@ -214,6 +215,7 @@ export type BookRecord = {
   key: string
   language: FieldValue<string>
   title: FieldValue<string>
+  series: FieldValue<string>
   authors: FieldValue<string[]>
   summary: FieldValue<string>
   genres: FieldValue<string[]>
@@ -229,5 +231,4 @@ export type BookRecord = {
   confidence: number
 }
 
-// Backward-compat aliases for existing call sites.
 export type NormalizedBookResult = BookCandidate
