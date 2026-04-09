@@ -4,7 +4,18 @@ import { sql } from '@/lib/db'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { BookOpen, Calendar, Building2, Languages, Hash, ArrowLeft, Users, Lock, Globe } from 'lucide-react'
+import {
+  BookOpen,
+  Calendar,
+  Building2,
+  Languages,
+  Hash,
+  ArrowLeft,
+  Users,
+  Lock,
+  Globe,
+  FileText,
+} from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { BookActions } from '@/components/book-actions'
@@ -34,13 +45,12 @@ export default async function BookDetailPage({
   const book = books[0]
   const isOwner = book.user_id === user.id
 
-  // Check if user can view this book
   if (!isOwner) {
     if (book.visibility === 'private') notFound()
-    
+
     if (book.visibility === 'friends') {
       const friendship = await sql`
-        SELECT id FROM friendships 
+        SELECT id FROM friendships
         WHERE status = 'accepted'
         AND ((user_id = ${user.id} AND friend_id = ${book.user_id})
           OR (friend_id = ${user.id} AND user_id = ${book.user_id}))
@@ -49,7 +59,6 @@ export default async function BookDetailPage({
     }
   }
 
-  // Get loan history if owner
   let loanHistory: any[] = []
   if (isOwner) {
     loanHistory = await sql`
@@ -81,7 +90,6 @@ export default async function BookDetailPage({
       </Link>
 
       <div className="flex flex-col md:flex-row gap-6">
-        {/* Book Cover */}
         <div className="w-full md:w-64 flex-shrink-0">
           <div className="aspect-[2/3] relative bg-muted rounded-lg overflow-hidden">
             {book.cover_url ? (
@@ -101,7 +109,6 @@ export default async function BookDetailPage({
           </div>
         </div>
 
-        {/* Book Info */}
         <div className="flex-1 space-y-4">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold text-foreground">{book.title}</h1>
@@ -142,7 +149,7 @@ export default async function BookDetailPage({
             <BorrowRequestButton bookId={book.id} ownerId={book.owner_id} />
           ) : null}
 
-          <div className="grid grid-cols-2 gap-4 text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             {book.publisher && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Building2 className="h-4 w-4" />
@@ -161,8 +168,14 @@ export default async function BookDetailPage({
                 {book.language.toUpperCase()}
               </div>
             )}
-            {(book.isbn || book.isbn_13) && (
+            {book.page_count && (
               <div className="flex items-center gap-2 text-muted-foreground">
+                <FileText className="h-4 w-4" />
+                {book.page_count} pages
+              </div>
+            )}
+            {(book.isbn || book.isbn_13) && (
+              <div className="flex items-center gap-2 text-muted-foreground sm:col-span-2">
                 <Hash className="h-4 w-4" />
                 {book.isbn_13 || book.isbn}
               </div>
