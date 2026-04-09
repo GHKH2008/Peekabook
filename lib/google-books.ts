@@ -79,7 +79,6 @@ type WikipediaPage = {
   thumbnail?: WikipediaPageThumbnail
   categories?: Array<{ title?: string }>
   terms?: WikipediaPageTerms
-  lang?: string
 }
 
 type WikipediaQueryResponse = {
@@ -94,6 +93,7 @@ type RankedBook = {
 }
 
 const HEBREW_RE = /[\u0590-\u05FF]/
+const NIKKUD_RE = /[\u0591-\u05C7]/g
 const OPEN_LIBRARY_LANGUAGE_FILTER: Record<string, string> = {
   en: 'eng',
   he: 'heb',
@@ -132,6 +132,10 @@ function getPublishedYear(value: string | undefined): string {
 
 function isLikelyIsbn(value: string): boolean {
   return /^[\dX-]{10,17}$/i.test(value.trim())
+}
+
+function removeNikkud(value: string): string {
+  return value.replace(NIKKUD_RE, '').trim()
 }
 
 function fetchDescriptionSentence(
@@ -589,6 +593,32 @@ async function searchWikipediaBooks(
   return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
 }
 
+async function searchHebrewFallbackBooks(query: string): Promise<GoogleBook[]> {
+  const trimmed = query.trim()
+  if (!trimmed || !HEBREW_RE.test(trimmed)) return []
+
+  const withoutNikkud = removeNikkud(trimmed)
+  const variants = Array.from(
+    new Set(
+      [
+        trimmed,
+        withoutNikkud,
+        `"${trimmed}"`,
+        withoutNikkud && withoutNikkud !== trimmed ? `"${withoutNikkud}"` : '',
+      ].filter(Boolean)
+    )
+  )
+
+  const settled = await Promise.allSettled(
+    variants.flatMap((variant) => [
+      searchGoogleSource(variant, 'he'),
+      searchOpenLibraryBooks(variant, 'he'),
+    ])
+  )
+
+  return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+}
+
 function makeBookDedupeKey(book: GoogleBook): string {
   const identifiers = book.volumeInfo.industryIdentifiers || []
   const isbn13 = identifiers.find((item) => item.type === 'ISBN_13')?.identifier
@@ -758,13 +788,22 @@ export async function searchGoogleBooks(
     result.status === 'fulfilled' ? result.value : []
   )
 
+  if (books.length === 0 && HEBREW_RE.test(normalizedQuery)) {
+    const hebrewFallbackBooks = await searchHebrewFallbackBooks(normalizedQuery)
+    books = [...books, ...hebrewFallbackBooks]
+  }
+
   if (books.length === 0) {
     const wikipediaBooks = await searchWikipediaBooks(normalizedQuery, langRestrict)
-    books = wikipediaBooks
+    books = [...books, ...wikipediaBooks]
   }
 
   if (books.length > 0) {
-    return rankAndDedupeBooks(fillMissingCoversFromMatches(books), normalizedQuery, langRestrict)
+    return rankAndDedupeBooks(
+      fillMissingCoversFromMatches(books),
+      normalizedQuery,
+      langRestrict
+    )
   }
 
   if (settled.every((result) => result.status === 'rejected')) {
