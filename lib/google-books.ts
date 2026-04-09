@@ -1,5 +1,6 @@
 import { normalizeBookIdentifier, normalizeBookLanguage, normalizeBookText, normalizeHebrewForComparison } from '@/lib/book-merge'
 import { searchBooksOrchestrated } from '@/lib/book-search/orchestrator'
+import { stripPunctuation } from '@/lib/book-search/normalize'
 import type { GroupedBookResult, NormalizedBookResult } from '@/lib/book-search/types'
 
 export type BookSourceName =
@@ -1437,14 +1438,28 @@ function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBo
 function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
   const primary = mapNormalizedResultToGoogleBook(group.primary)
   const seenEditionKeys = new Set<string>()
+  const seenEditionSignatures = new Set<string>()
   const editionVariants = group.editions
     .filter((edition) => `${edition.source}:${edition.source_id}` !== `${group.primary.source}:${group.primary.source_id}`)
     .filter((edition) => {
       const key = `${edition.source}:${edition.source_id}`
       if (seenEditionKeys.has(key)) return false
       seenEditionKeys.add(key)
+      const isbn = [edition.isbn_13, edition.isbn_10].find(Boolean) || ''
+      const year = edition.published_date?.match(/\d{4}/)?.[0] || ''
+      const signature = [
+        stripPunctuation(edition.title),
+        stripPunctuation((edition.authors || [])[0] || ''),
+        stripPunctuation(edition.publisher || ''),
+        stripPunctuation(edition.language || ''),
+        year,
+        isbn,
+      ].join('::')
+      if (seenEditionSignatures.has(signature)) return false
+      seenEditionSignatures.add(signature)
       return true
     })
+    .slice(0, 3)
     .map(mapNormalizedResultToGoogleBook)
 
   const displayTitle = group.work.display_title || primary.volumeInfo.title

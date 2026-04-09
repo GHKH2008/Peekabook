@@ -32,7 +32,7 @@ export function normalizeHebrewFinalForms(value: string): string {
 
 export function stripPunctuation(value: string): string {
   return normalizeHebrewFinalForms(value)
-    .replace(/["'.,/#!$%^&*;:{}=_`~()\[\]\\|?<>+-]/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase()
@@ -43,6 +43,19 @@ export function tokenizeTitle(value: string): string[] {
     .split(' ')
     .map((token) => token.trim())
     .filter((token) => token.length > 1)
+}
+
+export type NormalizedQuery = {
+  raw: string
+  tokens: string[]
+}
+
+export function normalizeQuery(query: string): NormalizedQuery {
+  const raw = stripPunctuation(query)
+  return {
+    raw,
+    tokens: raw.split(' ').filter((token) => token.length > 0),
+  }
 }
 
 function transliterationHint(value: string): string | undefined {

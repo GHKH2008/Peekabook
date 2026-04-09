@@ -1,5 +1,5 @@
 import { readCache, writeCache } from './cache'
-import { buildSearchVariants } from './normalize'
+import { buildSearchVariants, normalizeQuery } from './normalize'
 import { getBookProviders } from './providers'
 import { mergeCandidates } from './merge'
 import { rankResults } from './ranker'
@@ -23,6 +23,15 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
   if (cached) return cached
 
   const variants = buildSearchVariants(normalized)
+  const queryMeta = normalizeQuery(normalized)
+  const phraseQuery = queryMeta.tokens.length > 1 ? `"${queryMeta.raw}"` : undefined
+  const tokenQuery = queryMeta.tokens.join(' ')
+  const queryPlan = [
+    ...[phraseQuery, queryMeta.raw].filter(Boolean),
+    ...[tokenQuery].filter((v) => Boolean(v) && v !== queryMeta.raw),
+    ...variants,
+  ].filter(Boolean) as string[]
+  const plannedVariants = Array.from(new Set(queryPlan))
   const providerTimings: Record<string, number> = {}
   const providerErrors: Array<{ provider: any; message: string }> = []
 
@@ -33,7 +42,7 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
     if (!provider.enabled()) continue
     const start = Date.now()
 
-    for (const variant of variants.slice(0, 4)) {
+    for (const variant of plannedVariants.slice(0, 6)) {
       try {
         const items = await withTimeout(provider.search(variant, options), options.timeoutMs || 4500)
         aggregated.push(...items)
@@ -60,14 +69,32 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
       const baseScore = rankMeta?._score || 0
       const groupBonus = Math.min(group.total_editions - 1, 5) * 8
       const sourceBonus = Math.min(new Set((group.primary.source_attribution || []).map((item) => item.source)).size, 3) * 4
+      const confidencePenalty = baseScore < 120 ? -80 : baseScore < 180 ? -35 : 0
       return {
         ...group,
-        _score: baseScore + groupBonus + sourceBonus,
+        _score: baseScore + groupBonus + sourceBonus + confidencePenalty,
         _reasons: [...(rankMeta?._reasons || []), 'groupedEditionsBoost'],
       }
     })
     .sort((a, b) => b._score - a._score)
+    .filter((group, index) => {
+      if (group._score >= 140) return true
+      return index < 2 && group._score >= 100
+    })
     .slice(0, options.maxResults || 8)
+
+  if (options.debug) {
+    rankedGroups.forEach((group) => {
+      console.info('[books-search] score-debug', {
+        source: group.primary.source,
+        rawTitle: group.primary.title,
+        normalizedTitle: group.work.normalized_title,
+        workKey: group.work.canonical_work_id,
+        score: group._score,
+        scoreBreakdown: group._reasons,
+      })
+    })
+  }
 
   const response: SearchResponse = {
     results: rankedGroups.map(({ _score, _reasons, ...group }) => group),
