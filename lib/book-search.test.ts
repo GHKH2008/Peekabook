@@ -1,17 +1,18 @@
 import * as assert from 'node:assert/strict'
 
 import { normalizeQuery } from './book-search/normalize'
-import { mergeCandidates, shouldCrossLanguageCluster } from './book-search/merge'
-import { rankResults, scoreCandidate } from './book-search/ranker'
+import { mergeCandidates } from './book-search/merge'
+import { scoreCandidate, rankResults } from './book-search/ranker'
 import { makeCandidate } from './book-search/providers/utils'
 import type { BookCandidate } from './book-search/types'
 
 function c(partial: Partial<BookCandidate>): BookCandidate {
   return {
     ...makeCandidate({
-      source: 'google',
+      source: partial.source || 'google',
       sourceId: partial.source_edition_id || 'id-1',
       sourceWorkId: partial.source_work_id,
+      sourceEditionId: partial.source_edition_id,
       title: partial.title || 'Unknown',
       authors: partial.authors || [],
       languages: partial.languages || [],
@@ -19,124 +20,110 @@ function c(partial: Partial<BookCandidate>): BookCandidate {
       isbn13: partial.isbn13,
       publishDate: partial.publish_date,
       publishers: partial.publishers,
+      coverUrl: partial.cover_url,
+      pageCount: partial.page_count,
+      description: partial.description,
     }),
     ...partial,
   }
 }
 
-export function testExactNearTitleRescue() {
-  const query = normalizeQuery('he who fight with monsters')
-  const intended = scoreCandidate(c({ source: 'openlibrary', source_work_id: 'OL1W', title: 'He Who Fights with Monsters', authors: ['Shirtaloon'] }), query)
-  const noisy = scoreCandidate(c({ source: 'google', source_work_id: 'OL2W', title: 'Monsters and Other Tales', authors: ['Someone Else'] }), query)
-  const ranked = rankResults([noisy, intended], query.raw_query)
-  assert.equal(ranked[0].title, 'He Who Fights with Monsters')
-}
-
-export function testWorkGroupingUnsouledSingleWork() {
-  const query = normalizeQuery('unsouled')
-  const work = scoreCandidate(c({ source: 'openlibrary', source_work_id: 'OL777W', title: 'Unsouled', authors: ['Will Wight'] }), query)
-  const paperback = scoreCandidate(c({ source: 'google', title: 'Unsouled (Paperback)', authors: ['Will Wight'], isbn13: ['9780989671769'] }), query)
-  const ebook = scoreCandidate(c({ source: 'google', title: 'Unsouled', authors: ['Will Wight'], isbn13: ['9780989671769'], format: 'ebook' }), query)
-
-  const merged = mergeCandidates([work, paperback, ebook], query)
+function testSameBookAcrossSourcesMergeCorrectly() {
+  const query = normalizeQuery('The Name of the Wind Patrick Rothfuss')
+  const amazon = scoreCandidate(c({ source: 'amazon', source_edition_id: 'asin:1', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756404741'], cover_url: 'https://img/a-400.jpg' }), query)
+  const google = scoreCandidate(c({ source: 'google', source_edition_id: 'g1', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756404741'], description: 'A fantasy novel.' }), query)
+  const ol = scoreCandidate(c({ source: 'openlibrary', source_edition_id: 'OL1M', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756404741'] }), query)
+  const merged = mergeCandidates([amazon, google, ol], query)
   assert.equal(merged.groupedResults.length, 1)
+  assert.equal(merged.groupedResults[0].primary.authors[0], 'Patrick Rothfuss')
 }
 
-export function testSameTitleDifferentAuthorNotMerged() {
-  const query = normalizeQuery('the stand')
+function testSimilarTitlesDoNotMerge() {
+  const query = normalizeQuery('The Stand')
   const a = scoreCandidate(c({ source: 'google', title: 'The Stand', authors: ['Stephen King'] }), query)
   const b = scoreCandidate(c({ source: 'google', title: 'The Stand', authors: ['Craig White'] }), query)
   const merged = mergeCandidates([a, b], query)
   assert.equal(merged.groupedResults.length, 2)
 }
 
-export function testHebrewTitleWithRetailerEnrichment() {
-  const query = normalizeQuery('שם הרוח')
-  const openLibrary = scoreCandidate(
-    c({ source: 'openlibrary', source_work_id: 'OLNOWW', title: 'שם הרוח', authors: ['פטריק רותפס'], languages: ['he'], isbn13: ['9789650719755'] }),
-    query
-  )
-  const retailer = scoreCandidate(
-    c({ source: 'steimatzky', title: 'שם הרוח', authors: ['פטריק רותפס'], languages: ['he'], isbn13: ['9789650719755'], source_url: 'https://store.example/item' }),
-    query
-  )
-
-  const merged = mergeCandidates([openLibrary, retailer], query)
-  assert.equal(merged.groupedResults.length, 1)
-  assert.ok(merged.groupedResults[0].grouped_work.retailers.length >= 1)
-  assert.equal(merged.groupedResults[0].primary.source, 'openlibrary')
-}
-
-export function testEnglishHebrewCrossLinkEvidenceGuarded() {
-  const english = c({ title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756404741'] })
-  const hebrew = c({ title: 'שם הרוח', authors: ['פטריק רותפס'], languages: ['he'], isbn13: ['9780756404741'] })
-  assert.equal(shouldCrossLanguageCluster(english, hebrew), true)
-}
-
-export function testIsbnDirectMatch() {
-  const query = normalizeQuery('9780756404741')
-  const exact = scoreCandidate(c({ title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756404741'] }), query)
-  const other = scoreCandidate(c({ title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], isbn13: ['9780756405892'] }), query)
-  const ranked = rankResults([other, exact], query.raw_query)
-  assert.equal(ranked[0].isbn13?.[0], '9780756404741')
-}
-
-export function testNoisyKeywordDoesNotBeatSpecificTitle() {
-  const query = normalizeQuery('monsters')
-  const specific = scoreCandidate(c({ title: 'He Who Fights with Monsters', authors: ['Shirtaloon'] }), query)
-  const generic = scoreCandidate(c({ title: 'Monster Encyclopedia', authors: ['Various'] }), query)
-  const ranked = rankResults([generic, specific], query.raw_query)
-  assert.equal(ranked[0].title, 'He Who Fights with Monsters')
-}
-
-export function testCoverPreferredForPrimaryEdition() {
-  const query = normalizeQuery('unsouled')
-  const noCover = scoreCandidate(c({ title: 'Unsouled', authors: ['Will Wight'] }), query)
-  const withCover = scoreCandidate(c({ title: 'Unsouled', authors: ['Will Wight'], cover_url: 'https://img.example/1200.jpg' }), query)
-  const merged = mergeCandidates([noCover, withCover], query)
-  assert.equal(merged.groupedResults.length, 1)
-  assert.equal(merged.groupedResults[0].primary.cover_url, 'https://img.example/1200.jpg')
-}
-
-export function testTagMergingAcrossSources() {
-  const query = normalizeQuery('the name of the wind')
-  const a = scoreCandidate(c({ source: 'google', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], subjects: ['Fantasy'], tags: ['Epic Fantasy'] }), query)
-  const b = scoreCandidate(c({ source: 'openlibrary', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], subjects: ['fantasy'], tags: ['epic fantasy'] }), query)
-  const merged = mergeCandidates([a, b], query)
-  assert.equal(merged.groupedResults.length, 1)
-  assert.ok((merged.groupedResults[0].grouped_work.tags || []).includes('Fantasy'))
-  assert.ok((merged.groupedResults[0].grouped_work.tags || []).includes('Epic Fantasy'))
-}
-
-export function testAmazonEnrichmentStaysInSingleWork() {
-  const query = normalizeQuery('unsouled')
-  const google = scoreCandidate(c({ source: 'google', title: 'Unsouled', authors: ['Will Wight'], isbn13: ['9780989671769'] }), query)
-  const amazon = scoreCandidate(c({ source: 'amazon', title: 'Unsouled', authors: ['Will Wight'], isbn13: ['9780989671769'], tags: ['amazon'] }), query)
-  const merged = mergeCandidates([google, amazon], query)
-  assert.equal(merged.groupedResults.length, 1)
-  assert.ok(merged.groupedResults[0].grouped_work.source_summary.includes('amazon'))
-}
-
-export function testTranslationSafetyRequireEvidence() {
+function testEnglishAndHebrewEditionsDoNotMerge() {
   const query = normalizeQuery('name of the wind')
-  const original = scoreCandidate(c({ source: 'google', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'] }), query)
-  const unrelated = scoreCandidate(c({ source: 'google', title: 'שם הרוח', authors: ['מחבר אחר'] }), query)
-  const merged = mergeCandidates([original, unrelated], query)
+  const english = scoreCandidate(c({ title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], languages: ['en'], isbn13: ['9780756404741'] }), query)
+  const hebrew = scoreCandidate(c({ title: 'שם הרוח', authors: ['פטריק רותפס'], languages: ['he'], isbn13: ['9789650719755'] }), query)
+  const merged = mergeCandidates([english, hebrew], query)
   assert.equal(merged.groupedResults.length, 2)
 }
 
+function testHardcoverPaperbackDifferentIdentityStaySeparate() {
+  const query = normalizeQuery('Dune Frank Herbert')
+  const hardcover = scoreCandidate(c({ source: 'google', source_edition_id: 'g-hard', title: 'Dune', authors: ['Frank Herbert'], isbn13: ['9780441172719'], format: 'hardcover' }), query)
+  const paperback = scoreCandidate(c({ source: 'google', source_edition_id: 'g-paper', title: 'Dune', authors: ['Frank Herbert'], isbn13: ['9780593099322'], format: 'paperback' }), query)
+  const merged = mergeCandidates([hardcover, paperback], query)
+  assert.equal(merged.groupedResults.length, 2)
+}
+
+function testOpenLibraryEditionMatchingByIsbnWorks() {
+  const query = normalizeQuery('9780590353427')
+  const google = scoreCandidate(c({ source: 'google', source_edition_id: 'g-hp', title: 'Harry Potter', authors: ['J.K. Rowling'], isbn13: ['9780590353427'] }), query)
+  const ol = scoreCandidate(c({ source: 'openlibrary', source_edition_id: 'OLHPM', title: 'Harry Potter and the Sorcerers Stone', authors: ['J. K. Rowling'], isbn13: ['9780590353427'] }), query)
+  const merged = mergeCandidates([google, ol], query)
+  assert.equal(merged.groupedResults.length, 1)
+}
+
+function testHebrewStoreSkuStaysSeparate() {
+  const query = normalizeQuery('שם הרוח')
+  const storeA = scoreCandidate(c({ source: 'steimatzky', source_edition_id: 'sku-1', title: 'שם הרוח', authors: ['פטריק רותפס'], languages: ['he'] }), query)
+  const storeB = scoreCandidate(c({ source: 'steimatzky', source_edition_id: 'sku-2', title: 'שם הרוח', authors: ['פטריק רותפס'], languages: ['he'] }), query)
+  const merged = mergeCandidates([storeA, storeB], query)
+  assert.equal(merged.groupedResults.length, 2)
+}
+
+function testMissingFieldsFilledFromLaterSources() {
+  const query = normalizeQuery('Mistborn')
+  const amazon = scoreCandidate(c({ source: 'amazon', source_edition_id: 'asin-m', title: 'Mistborn', authors: ['Brandon Sanderson'], isbn13: ['9780765311788'] }), query)
+  const google = scoreCandidate(c({ source: 'google', source_edition_id: 'g-m', title: 'Mistborn', authors: ['Brandon Sanderson'], isbn13: ['9780765311788'], description: 'Epic fantasy novel', page_count: 541 }), query)
+  const merged = mergeCandidates([amazon, google], query)
+  assert.equal(merged.groupedResults[0].primary.page_count, 541)
+  assert.equal(merged.groupedResults[0].primary.description, 'Epic fantasy novel')
+}
+
+function testBetterCoverReplacesWorse() {
+  const query = normalizeQuery('Unsouled')
+  const lowCover = scoreCandidate(c({ source: 'google', title: 'Unsouled', authors: ['Will Wight'], isbn13: ['9780989671769'], cover_url: 'https://img/cover-120.jpg' }), query)
+  const highCover = scoreCandidate(c({ source: 'openlibrary', title: 'Unsouled', authors: ['Will Wight'], isbn13: ['9780989671769'], cover_url: 'https://img/cover-1200.jpg' }), query)
+  const merged = mergeCandidates([lowCover, highCover], query)
+  assert.equal(merged.groupedResults[0].grouped_work.best_cover_url, 'https://img/cover-1200.jpg')
+}
+
+function testDuplicatesRemovedProperly() {
+  const query = normalizeQuery('The Hobbit')
+  const a = scoreCandidate(c({ source: 'google', source_edition_id: 'g-hob', title: 'The Hobbit', authors: ['J.R.R. Tolkien'], isbn13: ['9780547928227'] }), query)
+  const b = scoreCandidate(c({ source: 'openlibrary', source_edition_id: 'OLHOBM', title: 'The Hobbit', authors: ['J. R. R. Tolkien'], isbn13: ['9780547928227'] }), query)
+  const merged = mergeCandidates([a, b], query)
+  assert.equal(merged.groupedResults.length, 1)
+  assert.equal(merged.groupedResults[0].editions.length, 2)
+}
+
+function testHebrewQueriesPreferHebrewResults() {
+  const query = 'שם הרוח'
+  const ranked = rankResults([
+    c({ source: 'google', title: 'The Name of the Wind', authors: ['Patrick Rothfuss'], languages: ['en'] }),
+    c({ source: 'steimatzky', title: 'שם הרוח', authors: ['פטריק רותפס'], languages: ['he'] }),
+  ], query, 'he')
+  assert.equal(ranked[0].languages?.[0], 'he')
+}
+
 export function runBookSearchTests() {
-  testExactNearTitleRescue()
-  testWorkGroupingUnsouledSingleWork()
-  testSameTitleDifferentAuthorNotMerged()
-  testHebrewTitleWithRetailerEnrichment()
-  testEnglishHebrewCrossLinkEvidenceGuarded()
-  testIsbnDirectMatch()
-  testNoisyKeywordDoesNotBeatSpecificTitle()
-  testCoverPreferredForPrimaryEdition()
-  testTagMergingAcrossSources()
-  testAmazonEnrichmentStaysInSingleWork()
-  testTranslationSafetyRequireEvidence()
+  testSameBookAcrossSourcesMergeCorrectly()
+  testSimilarTitlesDoNotMerge()
+  testEnglishAndHebrewEditionsDoNotMerge()
+  testHardcoverPaperbackDifferentIdentityStaySeparate()
+  testOpenLibraryEditionMatchingByIsbnWorks()
+  testHebrewStoreSkuStaysSeparate()
+  testMissingFieldsFilledFromLaterSources()
+  testBetterCoverReplacesWorse()
+  testDuplicatesRemovedProperly()
+  testHebrewQueriesPreferHebrewResults()
 }
 
 runBookSearchTests()

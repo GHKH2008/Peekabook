@@ -13,6 +13,7 @@ export type SearchDebugInfo = {
   candidateLogs?: CandidateDebugLog[]
   clusterLogs?: ClusterDebugLog[]
   ranking?: Array<{ id: string; score: number; reasons: string[] }>
+  pipelineSteps?: string[]
 }
 
 export type CandidateDebugLog = {
@@ -194,6 +195,38 @@ export type SearchResponse = {
   total_grouped_works: number
   results: GroupedBookResult[]
   debug?: SearchDebugInfo
+}
+
+export type FieldValue<T> = {
+  value: T | null
+  source: string | null
+  confidence: number
+}
+
+export type SourceSnapshot = {
+  source: string
+  sourceId?: string | null
+  url?: string | null
+  raw?: any
+}
+
+export type BookRecord = {
+  key: string
+  language: FieldValue<string>
+  title: FieldValue<string>
+  authors: FieldValue<string[]>
+  summary: FieldValue<string>
+  genres: FieldValue<string[]>
+  isbn10: FieldValue<string>
+  isbn13: FieldValue<string>
+  cover: FieldValue<string>
+  publisher: FieldValue<string>
+  publishedDate: FieldValue<string>
+  pageCount: FieldValue<number>
+  hebrewCategory: FieldValue<string>
+  hebrewSku: FieldValue<string>
+  sources: SourceSnapshot[]
+  confidence: number
 }
 
 // Backward-compat aliases for existing call sites.
