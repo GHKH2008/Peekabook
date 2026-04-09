@@ -1,8 +1,14 @@
-import { mergeDuplicateBooks, normalizeBookIdentifier, normalizeBookLanguage, normalizeBookText, normalizeHebrewForComparison } from '@/lib/book-merge'
+import { normalizeBookIdentifier, normalizeBookLanguage, normalizeBookText, normalizeHebrewForComparison } from '@/lib/book-merge'
+import { searchBooksOrchestrated } from '@/lib/book-search/orchestrator'
+import type { NormalizedBookResult } from '@/lib/book-search/types'
 
 export type BookSourceName =
   | 'google'
   | 'openlibrary'
+  | 'steimatzky'
+  | 'booknet'
+  | 'indiebook'
+  | 'simania'
   | 'gutendex'
   | 'wikipedia'
   | 'wikidata'
@@ -181,6 +187,10 @@ const OPEN_LIBRARY_LANGUAGE_FILTER: Record<string, string> = {
 const SOURCE_HEBREW_QUALITY: Partial<Record<BookSourceName, number>> = {
   google: 24,
   openlibrary: 34,
+  steimatzky: 48,
+  booknet: 46,
+  indiebook: 44,
+  simania: 42,
   wikidata: 8,
   wikipedia: 10,
   gutendex: -8,
@@ -191,6 +201,10 @@ const SOURCE_HEBREW_QUALITY: Partial<Record<BookSourceName, number>> = {
 const SOURCE_BASE_QUALITY: Partial<Record<BookSourceName, number>> = {
   openlibrary: 22,
   google: 18,
+  steimatzky: 28,
+  booknet: 27,
+  indiebook: 25,
+  simania: 24,
   wikidata: 4,
   wikipedia: 0,
   gutendex: -2,
@@ -1362,41 +1376,59 @@ export async function enrichGoogleBook(book: GoogleBook): Promise<GoogleBook> {
 export async function searchGoogleBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
   const normalizedQuery = query.trim()
   if (!normalizedQuery) return []
+  const debugEnabled = process.env.BOOK_SEARCH_DEBUG === 'true'
+  const response = await searchBooksOrchestrated(normalizedQuery, {
+    language: langRestrict,
+    timeoutMs: Number(process.env.BOOK_PROVIDER_TIMEOUT_MS || 4500),
+    debug: debugEnabled,
+    maxResults: 20,
+  })
 
-  const adapters = getSourceAdapters().sort((a, b) => b.priority - a.priority)
-
-  const settled = await Promise.allSettled(
-    adapters.map(async (adapter) => {
-      if (adapter.enabled && !adapter.enabled()) return []
-      if (langRestrict && adapter.supportsLanguageFilter === false && langRestrict !== 'he') return []
-      const items = await adapter.search(normalizedQuery, langRestrict)
-      return items.map((item) => withSourceTrace(item))
-    })
-  )
-
-  let books = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
-
-  if (books.length === 0 && HEBREW_RE.test(normalizedQuery)) {
-    const hebrewFallbackBooks = await searchHebrewFallbackBooks(normalizedQuery)
-    books = [...books, ...hebrewFallbackBooks]
+  if (debugEnabled && response.debug) {
+    console.info('[books-search] provider debug', response.debug)
   }
 
-  if (books.length === 0) {
-    const wikipediaBooks = await searchWikipediaBooks(normalizedQuery, langRestrict)
-    books = [...books, ...wikipediaBooks]
-  }
+  return response.results.map(mapNormalizedResultToGoogleBook)
+}
 
-  if (books.length > 0) {
-    const ranked = rankAndDedupeBooks(fillMissingCoversFromMatches(books), normalizedQuery, langRestrict)
-    return mergeDuplicateBooks(ranked, true).slice(0, 20)
-  }
+function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBook {
+  const identifiers = [
+    result.isbn_10 ? { type: 'ISBN_10', identifier: result.isbn_10 } : null,
+    result.isbn_13 ? { type: 'ISBN_13', identifier: result.isbn_13 } : null,
+  ].filter((value): value is { type: string; identifier: string } => Boolean(value))
 
-  if (settled.every((result) => result.status === 'rejected')) {
-    console.error('All book sources failed', settled)
-    throw new Error('Failed to search books right now. Please try again in a moment.')
+  return {
+    id: `${result.source}:${result.source_id}`,
+    source: result.source,
+    sourceTrace: Array.from(new Set([result.source, ...(result.source_attribution || []).map((item) => item.source)])),
+    sourceDetails: {
+      sources: Object.fromEntries(
+        (result.source_attribution || []).map((item) => [item.source, { id: item.source_id, link: item.source_url }])
+      ),
+      debug: {
+        mergedIds: [],
+        reasons: [],
+        confidence: 0,
+      },
+    },
+    volumeInfo: {
+      title: result.title,
+      subtitle: result.subtitle,
+      authors: result.authors,
+      description: result.description,
+      categories: result.categories,
+      industryIdentifiers: identifiers,
+      language: result.language,
+      imageLinks: {
+        thumbnail: result.cover_image,
+        smallThumbnail: result.thumbnail_image || result.cover_image,
+      },
+      publisher: result.publisher,
+      publishedDate: result.published_date,
+      pageCount: result.page_count,
+      maturityRating: 'NOT_MATURE',
+    },
   }
-
-  return []
 }
 
 export function parseGoogleBook(book: GoogleBook) {
