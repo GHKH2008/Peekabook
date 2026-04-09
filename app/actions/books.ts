@@ -30,52 +30,110 @@ export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActi
 
   try {
     enrichedBook = await enrichGoogleBook(googleBook)
-  } catch {
+  } catch (error) {
+    console.error('Book enrichment failed, continuing with original data', error)
     enrichedBook = googleBook
   }
 
   const bookData = parseGoogleBook(enrichedBook)
 
-  const existing = await sql`
-    SELECT id FROM books
-    WHERE user_id = ${user.id}
-    AND (
-      google_books_id = ${bookData.google_books_id}
-      OR (
-        ${bookData.isbn_13} IS NOT NULL
-        AND isbn_13 = ${bookData.isbn_13}
-      )
-      OR (
-        ${bookData.isbn} IS NOT NULL
-        AND isbn = ${bookData.isbn}
-      )
-    )
-    LIMIT 1
-  `
+  try {
+    // Check duplicate by google id first
+    if (bookData.google_books_id) {
+      const existingByGoogleId = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND google_books_id = ${bookData.google_books_id}
+        LIMIT 1
+      `
 
-  if (existing.length > 0) {
-    return { success: false, error: 'This book is already in your library' }
+      if (existingByGoogleId.length > 0) {
+        return { success: false, error: 'This book is already in your library' }
+      }
+    }
+
+    // Check duplicate by ISBN-13
+    if (bookData.isbn_13) {
+      const existingByIsbn13 = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND isbn_13 = ${bookData.isbn_13}
+        LIMIT 1
+      `
+
+      if (existingByIsbn13.length > 0) {
+        return { success: false, error: 'This book is already in your library' }
+      }
+    }
+
+    // Check duplicate by ISBN-10
+    if (bookData.isbn) {
+      const existingByIsbn10 = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND isbn = ${bookData.isbn}
+        LIMIT 1
+      `
+
+      if (existingByIsbn10.length > 0) {
+        return { success: false, error: 'This book is already in your library' }
+      }
+    }
+
+    const result = await sql`
+      INSERT INTO books (
+        user_id,
+        google_books_id,
+        title,
+        authors,
+        summary,
+        genres,
+        isbn,
+        isbn_13,
+        language,
+        cover_url,
+        publisher,
+        published_date,
+        page_count,
+        is_adult
+      ) VALUES (
+        ${user.id},
+        ${bookData.google_books_id},
+        ${bookData.title},
+        ${bookData.authors},
+        ${bookData.summary},
+        ${bookData.genres},
+        ${bookData.isbn},
+        ${bookData.isbn_13},
+        ${bookData.language},
+        ${bookData.cover_url},
+        ${bookData.publisher},
+        ${bookData.published_date},
+        ${bookData.page_count},
+        ${bookData.is_adult}
+      )
+      RETURNING id
+    `
+
+    revalidatePath('/library')
+    revalidatePath('/dashboard')
+
+    return { success: true, bookId: result[0].id }
+  } catch (error) {
+    console.error('Failed to add book to library', {
+      error,
+      bookData,
+      userId: user.id,
+    })
+
+    return {
+      success: false,
+      error: 'Failed to add book to library',
+    }
   }
-
-  const result = await sql`
-    INSERT INTO books (
-      user_id, google_books_id, title, authors, summary, genres,
-      isbn, isbn_13, language, cover_url, publisher, published_date,
-      page_count, is_adult
-    ) VALUES (
-      ${user.id}, ${bookData.google_books_id}, ${bookData.title},
-      ${bookData.authors}, ${bookData.summary}, ${bookData.genres},
-      ${bookData.isbn}, ${bookData.isbn_13}, ${bookData.language},
-      ${bookData.cover_url}, ${bookData.publisher}, ${bookData.published_date},
-      ${bookData.page_count}, ${bookData.is_adult}
-    )
-    RETURNING id
-  `
-
-  revalidatePath('/library')
-  revalidatePath('/dashboard')
-
-  return { success: true, bookId: result[0].id }
 }
 
 export async function addCustomBookToLibrary(data: CustomBookInput): Promise<BookActionResult> {
