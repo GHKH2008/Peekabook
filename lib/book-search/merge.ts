@@ -216,8 +216,6 @@ function textFallbackScore(a: NormalizedBookResult, b: NormalizedBookResult): { 
 function buildWorkKey(item: NormalizedBookResult): string {
   const ids = item.identity_keys || extractIdentity(item)
   if (ids.openlibrary_work_id) return `work:olw:${ids.openlibrary_work_id}`
-  const isbn = ids.isbns[0]
-  if (isbn) return `work:isbn:${isbn}`
   const base = `${normalizeText(item.title)}::${normalizeText(item.authors[0] || '')}`
   return `work:text:${base || `${item.source}:${item.source_id}`}`
 }
@@ -353,6 +351,39 @@ function dedupeEditionRecords(records: CatalogEdition[]): CatalogEdition[] {
   return Array.from(map.values())
 }
 
+function variantSignature(item: NormalizedBookResult): string {
+  const ids = item.identity_keys || extractIdentity(item)
+  const year = (item.published_date || '').match(/\d{4}/)?.[0] || ''
+  return [
+    normalizeText(item.title),
+    normalizeText(item.authors[0] || ''),
+    ids.isbns[0] || '',
+    normalizeText(item.publisher || ''),
+    year,
+    normalizeText(item.language || ''),
+  ].join('::')
+}
+
+function collapseNearIdenticalVariants(cluster: NormalizedBookResult[], options: SearchOrchestratorOptions): NormalizedBookResult[] {
+  const sorted = [...cluster].sort((a, b) => baseEditionScore(b, options) - baseEditionScore(a, options))
+  const unique = new Map<string, NormalizedBookResult>()
+
+  for (const candidate of sorted) {
+    const key = variantSignature(candidate)
+    if (!unique.has(key)) {
+      unique.set(key, candidate)
+      continue
+    }
+
+    const existing = unique.get(key)!
+    if (baseEditionScore(candidate, options) > baseEditionScore(existing, options)) {
+      unique.set(key, candidate)
+    }
+  }
+
+  return Array.from(unique.values()).slice(0, 3)
+}
+
 export function mergeCandidates(
   results: NormalizedBookResult[],
   options: SearchOrchestratorOptions = {}
@@ -429,6 +460,7 @@ export function mergeCandidates(
   const groupedResults: GroupedBookResult[] = clusters.map((cluster, index) => {
     const primary = mergeCluster(cluster, options)
     const sortedEditions = [...cluster].sort((a, b) => baseEditionScore(b, options) - baseEditionScore(a, options))
+    const collapsedEditions = collapseNearIdenticalVariants(sortedEditions, options)
     const workKey = buildWorkKey(primary)
     const editionRecords = dedupeEditionRecords(cluster.map((item) => buildEditionRecord(item, workKey)))
     const work = buildWorkRecord(primary, sortedEditions, workKey)
@@ -437,7 +469,7 @@ export function mergeCandidates(
       group_id: `group:${work.canonical_work_id}:${index}`,
       work,
       primary,
-      editions: sortedEditions,
+      editions: collapsedEditions,
       edition_records: editionRecords,
       total_editions: editionRecords.length,
     }

@@ -37,6 +37,24 @@ export function testHebrewRankingBoost() {
   assert.equal(ranked[0].source_id, 'h')
 }
 
+export function testMisspelledTitleRanksIntendedBookFirst() {
+  const intended = makeResult({
+    source: 'openlibrary',
+    source_id: 'hwfm-1',
+    title: 'He Who Fights with Monsters',
+    authors: ['Shirtaloon'],
+  })
+  const noisy = makeResult({
+    source: 'google',
+    source_id: 'noise-1',
+    title: 'Monsters of Men',
+    authors: ['Patrick Ness'],
+    description: 'A dystopian story involving monsters.',
+  })
+  const ranked = rankResults([noisy, intended], 'he who fight with monsters')
+  assert.equal(ranked[0].source_id, 'hwfm-1')
+}
+
 export function testSameTitleDifferentBooksNotMerged() {
   const a = makeResult({ source: 'google', source_id: '1', title: 'שומרי הזמן', authors: ['אורי'], published_date: '2018' })
   const b = makeResult({ source: 'google', source_id: '2', title: 'שומרי הזמן', authors: ['דנה'], published_date: '2024' })
@@ -56,6 +74,36 @@ export function testAuthorMiddleInitialFallbackMerge() {
   const b = makeResult({ source: 'openlibrary', source_id: 'b2', title: 'Unsouled', authors: ['Will L. Wight'], published_date: '2023' })
   const merged = mergeCandidates([a, b])
   assert.equal(merged.groupedResults.length, 1)
+}
+
+export function testUnsouledGroupedAsSingleWorkWithEditionVariants() {
+  const work = makeResult({
+    source: 'openlibrary',
+    source_id: '/works/OL777W',
+    title: 'Unsouled',
+    authors: ['Will Wight'],
+    raw_source_data: { key: '/works/OL777W' },
+  })
+  const paperback = makeResult({
+    source: 'google',
+    source_id: 'gb-1',
+    title: 'Unsouled (Paperback)',
+    authors: ['Will Wight'],
+    published_date: '2018',
+    isbn_13: '9780989671769',
+  })
+  const ebook = makeResult({
+    source: 'google',
+    source_id: 'gb-2',
+    title: 'Unsouled',
+    authors: ['Will Wight'],
+    published_date: '2020',
+    isbn_13: '9780989671769',
+  })
+
+  const merged = mergeCandidates([work, paperback, ebook])
+  assert.equal(merged.groupedResults.length, 1)
+  assert.ok(merged.groupedResults[0].editions.length <= 3)
 }
 
 export function testDifferentSeriesEntriesDoNotMergeOnPrefixTitle() {
@@ -126,17 +174,40 @@ export function testOpenLibraryWorkIdentityPreferredGrouping() {
   assert.equal(merged.groupedResults[0].work.display_title, 'The Name of the Wind')
 }
 
+export function testIsbnQueryRanksDirectEditionFirst() {
+  const exact = makeResult({
+    source: 'openlibrary',
+    source_id: 'exact-isbn',
+    title: 'The Name of the Wind',
+    authors: ['Patrick Rothfuss'],
+    isbn_13: '9780756404741',
+  })
+  const other = makeResult({
+    source: 'google',
+    source_id: 'other-isbn',
+    title: 'The Name of the Wind',
+    authors: ['Patrick Rothfuss'],
+    isbn_13: '9780756405892',
+  })
+
+  const ranked = rankResults([other, exact], '9780756404741')
+  assert.equal(ranked[0].source_id, 'exact-isbn')
+}
+
 export function runBookSearchTests() {
   testHebrewNormalization()
   testMergeDuplicateByIsbnAndTitle()
   testHebrewRankingBoost()
+  testMisspelledTitleRanksIntendedBookFirst()
   testSameTitleDifferentBooksNotMerged()
   testAuthorSpellingVariationMerges()
   testAuthorMiddleInitialFallbackMerge()
+  testUnsouledGroupedAsSingleWorkWithEditionVariants()
   testDifferentSeriesEntriesDoNotMergeOnPrefixTitle()
   testOpenLibraryConflictingWorkIdsCanMergeWhenTitleAuthorExact()
   testDifferentOpenLibraryWorksDoNotMergeByTitleFallback()
   testOpenLibraryWorkIdentityPreferredGrouping()
+  testIsbnQueryRanksDirectEditionFirst()
 }
 
 runBookSearchTests()
