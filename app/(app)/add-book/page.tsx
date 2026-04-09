@@ -23,6 +23,7 @@ export default function AddBookPage() {
   const [searchPending, setSearchPending] = useState(false)
   const [searchResults, setSearchResults] = useState<EnglishBook[]>([])
   const [addingBookKey, setAddingBookKey] = useState<string | null>(null)
+  const [addedBookKeys, setAddedBookKeys] = useState<Set<string>>(new Set())
   const [searchMessage, setSearchMessage] = useState<string | null>(null)
 
   async function handleSearch(e: React.FormEvent) {
@@ -30,6 +31,7 @@ export default function AddBookPage() {
     setSearchPending(true)
     setError(null)
     setSearchMessage(null)
+    setAddedBookKeys(new Set())
 
     try {
       const results = await searchBooks(searchQuery)
@@ -44,8 +46,13 @@ export default function AddBookPage() {
     }
   }
 
+  function getBookKey(book: EnglishBook) {
+    return book.sourceEditionId ?? `${book.title}-${book.authors[0] ?? ''}`
+  }
+
   async function handleAddSearchedBook(book: EnglishBook) {
-    setAddingBookKey(book.sourceEditionId ?? book.title)
+    const key = getBookKey(book)
+    setAddingBookKey(key)
     setError(null)
     setSearchMessage(null)
 
@@ -70,6 +77,7 @@ export default function AddBookPage() {
       if (!result.success) {
         setError(result.error || 'Failed to add searched book')
       } else {
+        setAddedBookKeys((prev) => new Set(prev).add(key))
         setSearchMessage(`Added “${book.title}” to your library.`)
       }
     } catch {
@@ -138,7 +146,7 @@ export default function AddBookPage() {
 
           <div className="space-y-3">
             {searchResults.map((book) => {
-              const key = book.sourceEditionId ?? `${book.title}-${book.authors[0] ?? ''}`
+              const key = getBookKey(book)
               const shortSummary = book.summary ? `${book.summary.slice(0, 180)}${book.summary.length > 180 ? '…' : ''}` : null
 
               return (
@@ -167,10 +175,10 @@ export default function AddBookPage() {
                       <Button
                         type="button"
                         variant="secondary"
-                        disabled={addingBookKey === key}
+                        disabled={addingBookKey === key || addedBookKeys.has(key)}
                         onClick={() => handleAddSearchedBook(book)}
                       >
-                        {addingBookKey === key ? 'Adding...' : 'Add to Library'}
+                        {addingBookKey === key ? 'Adding...' : addedBookKeys.has(key) ? 'Added' : 'Add to Library'}
                       </Button>
                     </div>
                   </div>
