@@ -1440,9 +1440,35 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
     .filter((edition) => `${edition.source}:${edition.source_id}` !== `${group.primary.source}:${group.primary.source_id}`)
     .map(mapNormalizedResultToGoogleBook)
 
+  const displayTitle = group.work.display_title || primary.volumeInfo.title
+  const displayAuthors = group.work.display_authors?.length ? group.work.display_authors : primary.volumeInfo.authors
+  const displayDescription = group.work.description || primary.volumeInfo.description
+  const displayCategories = group.work.subjects?.length ? group.work.subjects : primary.volumeInfo.categories
+
   return {
     ...primary,
     groupId: group.group_id,
+    sourceTrace: Array.from(new Set([...(primary.sourceTrace || []), ...(group.work.source_badges || [])])),
+    sourceDetails: {
+      ...(primary.sourceDetails || { sources: {} }),
+      debug: {
+        mergedIds: editionVariants.map((item) => item.id),
+        reasons: [`work:${group.work.canonical_work_id}`, `confidence:${group.work.source_confidence.toFixed(2)}`],
+        confidence: group.work.source_confidence,
+      },
+    },
+    volumeInfo: {
+      ...primary.volumeInfo,
+      title: displayTitle,
+      authors: displayAuthors,
+      description: displayDescription,
+      categories: displayCategories,
+      language: group.work.language || primary.volumeInfo.language,
+      imageLinks: {
+        thumbnail: group.work.cover || primary.volumeInfo.imageLinks?.thumbnail,
+        smallThumbnail: group.work.cover || primary.volumeInfo.imageLinks?.smallThumbnail,
+      },
+    },
     editions: editionVariants,
     editionCount: group.total_editions,
   }

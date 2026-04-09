@@ -2,9 +2,16 @@ const HEBREW_NIKKUD_RE = /[\u0591-\u05C7]/g
 const QUOTE_RE = /[“”„‟«»]/g
 const APOSTROPHE_RE = /[’‘‚‛`´]/g
 const DASH_RE = /[‐‑‒–—―]/g
+const FINAL_FORM_REPLACEMENTS: Record<string, string> = {
+  ך: 'כ',
+  ם: 'מ',
+  ן: 'נ',
+  ף: 'פ',
+  ץ: 'צ',
+}
 
 export function normalizeHebrewText(value: string): string {
-  return value
+  return String(value || '')
     .trim()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -16,9 +23,16 @@ export function normalizeHebrewText(value: string): string {
     .trim()
 }
 
-export function stripPunctuation(value: string): string {
+export function normalizeHebrewFinalForms(value: string): string {
   return normalizeHebrewText(value)
-    .replace(/["'.,/#!$%^&*;:{}=\-_`~()\[\]\\|?<>]/g, ' ')
+    .split('')
+    .map((char) => FINAL_FORM_REPLACEMENTS[char] || char)
+    .join('')
+}
+
+export function stripPunctuation(value: string): string {
+  return normalizeHebrewFinalForms(value)
+    .replace(/["'.,/#!$%^&*;:{}=_`~()\[\]\\|?<>+-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase()
@@ -32,38 +46,53 @@ export function tokenizeTitle(value: string): string[] {
 }
 
 function transliterationHint(value: string): string | undefined {
-  const normalized = normalizeHebrewText(value)
+  const normalized = normalizeHebrewFinalForms(value)
   if (!/[\u0590-\u05FF]/.test(normalized)) return undefined
 
   const map: Record<string, string> = {
-    ש: 'sh',
-    ו: 'v',
-    מ: 'm',
-    ר: 'r',
-    י: 'i',
+    א: 'a',
+    ב: 'b',
+    ג: 'g',
+    ד: 'd',
     ה: 'h',
+    ו: 'v',
     ז: 'z',
-    נ: 'n',
+    ח: 'ch',
+    ט: 't',
+    י: 'i',
+    כ: 'k',
     ל: 'l',
-    ת: 't',
+    מ: 'm',
+    נ: 'n',
+    ס: 's',
+    ע: 'a',
+    פ: 'p',
+    צ: 'tz',
     ק: 'k',
+    ר: 'r',
+    ש: 'sh',
+    ת: 't',
   }
 
   const translated = normalized
     .split('')
-    .map((char) => map[char] ?? '')
+    .map((char) => (char === ' ' ? ' ' : map[char] ?? ''))
     .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
 
   return translated.length >= 4 ? translated : undefined
 }
 
 export function buildSearchVariants(query: string): string[] {
-  const normalized = normalizeHebrewText(query)
-  const stripped = stripPunctuation(query)
+  const trimmed = query.trim()
+  const normalized = normalizeHebrewText(trimmed)
+  const normalizedFinalForms = normalizeHebrewFinalForms(trimmed)
+  const stripped = stripPunctuation(trimmed)
   const quoted = `"${normalized}"`
-  const transliterated = transliterationHint(query)
+  const transliterated = transliterationHint(trimmed)
 
-  return Array.from(new Set([query.trim(), normalized, stripped, quoted, transliterated].filter(Boolean) as string[]))
+  return Array.from(new Set([trimmed, normalized, normalizedFinalForms, stripped, quoted, transliterated].filter(Boolean) as string[]))
 }
 
 export function isHebrewQuery(query: string): boolean {
