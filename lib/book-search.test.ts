@@ -1,6 +1,6 @@
-import assert from 'node:assert/strict'
+import * as assert from 'node:assert/strict'
 
-import { normalizeHebrewText, buildSearchVariants } from './book-search/normalize'
+import { normalizeHebrewText, buildSearchVariants, normalizeHebrewFinalForms } from './book-search/normalize'
 import { mergeCandidates } from './book-search/merge'
 import { rankResults } from './book-search/ranker'
 import type { NormalizedBookResult } from './book-search/types'
@@ -17,6 +17,7 @@ function makeResult(partial: Partial<NormalizedBookResult>): NormalizedBookResul
 
 export function testHebrewNormalization() {
   assert.equal(normalizeHebrewText('  שומרי   הזמן '), 'שומרי הזמן')
+  assert.equal(normalizeHebrewFinalForms('מלך קטן'), 'מלכ קטנ')
   const variants = buildSearchVariants('שומרי הזמן')
   assert.ok(variants.includes('"שומרי הזמן"'))
 }
@@ -26,7 +27,7 @@ export function testMergeDuplicateByIsbnAndTitle() {
   const b = makeResult({ source: 'simania', source_id: 'sm1', title: 'שומרי-הזמן', authors: ['נועה'], isbn_13: '9789650000000' })
   const merged = mergeCandidates([a, b])
   assert.equal(merged.groupedResults.length, 1)
-  assert.equal(merged.groupedResults[0].total_editions, 2)
+  assert.equal(merged.groupedResults[0].total_editions, 1)
 }
 
 export function testHebrewRankingBoost() {
@@ -46,6 +47,40 @@ export function testSameTitleDifferentBooksNotMerged() {
 export function testAuthorSpellingVariationMerges() {
   const a = makeResult({ source: 'openlibrary', source_id: 'a', title: 'שם הרוח', authors: ['פטריק רותפס'], isbn_13: '9789650719755' })
   const b = makeResult({ source: 'steimatzky', source_id: 'b', title: 'שם הרוח', authors: ['פטריק רוטפס'], isbn_13: '9789650719755' })
+  const merged = mergeCandidates([a, b])
+  assert.equal(merged.groupedResults.length, 1)
+}
+
+export function testAuthorMiddleInitialFallbackMerge() {
+  const a = makeResult({ source: 'openlibrary', source_id: 'a2', title: 'Unsouled', authors: ['Will Wight'], published_date: '2017' })
+  const b = makeResult({ source: 'openlibrary', source_id: 'b2', title: 'Unsouled', authors: ['Will L. Wight'], published_date: '2023' })
+  const merged = mergeCandidates([a, b])
+  assert.equal(merged.groupedResults.length, 1)
+}
+
+export function testDifferentSeriesEntriesDoNotMergeOnPrefixTitle() {
+  const a = makeResult({ source: 'google', source_id: 's1', title: 'He Who Fights with Monsters', authors: ['Shirtaloon'] })
+  const b = makeResult({ source: 'google', source_id: 's2', title: 'He Who Fights with Monsters: Hero', authors: ['Shirtaloon'] })
+  const merged = mergeCandidates([a, b])
+  assert.equal(merged.groupedResults.length, 2)
+}
+
+export function testOpenLibraryConflictingWorkIdsCanMergeWhenTitleAuthorExact() {
+  const a = makeResult({
+    source: 'openlibrary',
+    source_id: '/works/OL111W',
+    title: 'Unsouled',
+    authors: ['Will Wight'],
+    raw_source_data: { key: '/works/OL111W' },
+  })
+  const b = makeResult({
+    source: 'openlibrary',
+    source_id: '/works/OL222W',
+    title: 'Unsouled',
+    authors: ['Will L. Wight'],
+    raw_source_data: { key: '/works/OL222W' },
+  })
+
   const merged = mergeCandidates([a, b])
   assert.equal(merged.groupedResults.length, 1)
 }
@@ -70,13 +105,38 @@ export function testDifferentOpenLibraryWorksDoNotMergeByTitleFallback() {
   assert.equal(merged.groupedResults.length, 2)
 }
 
+export function testOpenLibraryWorkIdentityPreferredGrouping() {
+  const workA = makeResult({
+    source: 'openlibrary',
+    source_id: '/works/OL111W',
+    title: 'The Name of the Wind (Paperback Edition)',
+    authors: ['Patrick Rothfuss'],
+    raw_source_data: { key: '/works/OL111W' },
+  })
+  const workB = makeResult({
+    source: 'openlibrary',
+    source_id: '/books/OL22M',
+    title: 'The Name of the Wind',
+    authors: ['Patrick Rothfuss'],
+    raw_source_data: { key: '/books/OL22M', works: [{ key: '/works/OL111W' }] },
+  })
+
+  const merged = mergeCandidates([workA, workB])
+  assert.equal(merged.groupedResults.length, 1)
+  assert.equal(merged.groupedResults[0].work.display_title, 'The Name of the Wind')
+}
+
 export function runBookSearchTests() {
   testHebrewNormalization()
   testMergeDuplicateByIsbnAndTitle()
   testHebrewRankingBoost()
   testSameTitleDifferentBooksNotMerged()
   testAuthorSpellingVariationMerges()
+  testAuthorMiddleInitialFallbackMerge()
+  testDifferentSeriesEntriesDoNotMergeOnPrefixTitle()
+  testOpenLibraryConflictingWorkIdsCanMergeWhenTitleAuthorExact()
   testDifferentOpenLibraryWorksDoNotMergeByTitleFallback()
+  testOpenLibraryWorkIdentityPreferredGrouping()
 }
 
 runBookSearchTests()

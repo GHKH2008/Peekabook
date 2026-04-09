@@ -29,8 +29,8 @@ export const simaniaProvider = createHtmlMetadataProvider({
 
 export function getBookProviders(): Array<{ provider: BookSearchProvider; order: number }> {
   return [
-    { provider: googleProvider, order: 90 },
-    { provider: openLibraryProvider, order: 80 },
+    { provider: openLibraryProvider, order: 95 },
+    { provider: googleProvider, order: 85 },
     { provider: steimatzkyProvider, order: 70 },
     { provider: booknetProvider, order: 60 },
     { provider: indiebookProvider, order: 50 },
