@@ -70,7 +70,7 @@ export default function AddBookPage() {
       <div>
         <h1 className="text-2xl md:text-3xl font-bold text-foreground">Add a Book</h1>
         <p className="text-muted-foreground">
-          Search Google Books to add to your library
+          Search multiple book catalogs to add to your library
         </p>
       </div>
 
