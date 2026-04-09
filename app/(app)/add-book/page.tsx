@@ -18,6 +18,7 @@ import Image from 'next/image'
 import { searchBooks, addBookToLibrary, addCustomBookToLibrary } from '@/app/actions/books'
 import type { GoogleBook } from '@/lib/google-books'
 import { buildMergedDisplayModel } from '@/lib/book-merge'
+import { Badge } from '@/components/ui/badge'
 
 export default function AddBookPage() {
   const [query, setQuery] = useState('')
@@ -291,6 +292,13 @@ export default function AddBookPage() {
                           {book.volumeInfo.authors.join(', ')}
                         </p>
                       )}
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {(book.sourceTrace || []).map((source) => (
+                          <Badge key={`${book.id}-${source}`} variant="secondary" className="text-[10px]">
+                            {source}
+                          </Badge>
+                        ))}
+                      </div>
                       {book.volumeInfo.publisher && (
                         <p className="text-xs text-muted-foreground mt-1">
                           Publisher: {book.volumeInfo.publisher}
@@ -309,6 +317,11 @@ export default function AddBookPage() {
                       {display.sourceSummary && (
                         <p className="text-xs text-muted-foreground mt-2">
                           Sources: {display.sourceSummary}
+                        </p>
+                      )}
+                      {(book.sourceTrace || []).length > 1 && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Found in {(book.sourceTrace || []).length} sources
                         </p>
                       )}
                     </div>

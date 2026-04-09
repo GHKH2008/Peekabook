@@ -315,6 +315,10 @@ function sourceDetails(books: GoogleBook[]): NonNullable<GoogleBook['sourceDetai
 
 function choosePreferredSource(sources: BookSourceName[]): BookSourceName | undefined {
   const order: BookSourceName[] = [
+    'steimatzky',
+    'booknet',
+    'indiebook',
+    'simania',
     'nli_catalog',
     'israel_books_catalog',
     'hebrewbooks_catalog',
@@ -482,6 +486,10 @@ export function buildMergedDisplayModel(book: GoogleBook): {
       .map((source) => {
         if (source === 'openlibrary') return 'Open Library'
         if (source === 'wikidata') return 'Wikidata'
+        if (source === 'steimatzky') return 'Steimatzky'
+        if (source === 'booknet') return 'Booknet'
+        if (source === 'indiebook') return 'Indiebook'
+        if (source === 'simania') return 'Simania'
         if (source === 'nli_catalog') return 'NLI Catalog'
         if (source === 'hebrewbooks_catalog') return 'HebrewBooks'
         if (source === 'israel_books_catalog') return 'Israel Books'
