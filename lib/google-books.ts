@@ -1,4 +1,5 @@
 import { searchBooksOrchestrated } from '@/lib/book-search/orchestrator'
+import { buildEnglishBookRecord } from '@/lib/book-search/english-record'
 import { stripPunctuation } from '@/lib/book-search/normalize'
 import type { GroupedBookResult, NormalizedBookResult } from '@/lib/book-search/types'
 
@@ -43,6 +44,7 @@ export type GoogleBook = {
   volumeInfo: {
     title: string
     subtitle?: string
+    series?: string
     authors?: string[]
     description?: string
     categories?: string[]
@@ -120,6 +122,7 @@ function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBo
     volumeInfo: {
       title: result.title,
       subtitle: result.subtitle,
+      series: result.series || result.series_name,
       authors: result.authors,
       description: result.description,
       categories: result.subjects,
@@ -141,6 +144,7 @@ function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBo
 
 function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
   const primary = mapNormalizedResultToGoogleBook(group.primary)
+  const englishRecord = buildEnglishBookRecord(group.editions)
 
   const seenEditionKeys = new Set<string>()
   const seenEditionSignatures = new Set<string>()
@@ -174,16 +178,10 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
     .slice(0, 6)
     .map(mapNormalizedResultToGoogleBook)
 
-  const displayTitle = group.primary.title || group.work.display_title || primary.volumeInfo.title
-  const displayAuthors =
-    group.primary.authors?.length ? group.primary.authors : group.work.display_authors?.length ? group.work.display_authors : primary.volumeInfo.authors
-  const displayDescription = group.primary.description || group.work.description || primary.volumeInfo.description
-  const displayCategories =
-    group.primary.subjects?.length ? group.primary.subjects : group.work.subjects?.length ? group.work.subjects : primary.volumeInfo.categories
-
-  const mergedTopics = Array.from(
-    new Set([...(group.grouped_work.tags || []), ...(displayCategories || [])])
-  ).slice(0, 30)
+  const allIdentifiers = [
+    englishRecord.isbn10.value ? { type: 'ISBN_10', identifier: englishRecord.isbn10.value } : null,
+    englishRecord.isbn13.value ? { type: 'ISBN_13', identifier: englishRecord.isbn13.value } : null,
+  ].filter((value): value is { type: string; identifier: string } => Boolean(value))
 
   return {
     ...primary,
@@ -193,11 +191,15 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
       ...(primary.sourceDetails || { sources: {} }),
       debug: {
         mergedIds: editionVariants.map((item) => item.id),
-        reasons: [`work:${group.work.canonical_work_id}`, `confidence:${group.work.source_confidence.toFixed(2)}`],
-        confidence: group.work.source_confidence,
+        reasons: [
+          `work:${group.work.canonical_work_id}`,
+          `confidence:${group.work.source_confidence.toFixed(2)}`,
+          `english_record:${englishRecord.confidence.toFixed(2)}`,
+        ],
+        confidence: Math.max(group.work.source_confidence, englishRecord.confidence),
       },
       retailers: group.grouped_work.retailers,
-      topics: mergedTopics,
+      topics: englishRecord.genres.value || group.grouped_work.tags || [],
       allCoverUrls: group.grouped_work.all_cover_urls || [],
       openLibrary:
         primary.source === 'openlibrary'
@@ -210,18 +212,23 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
     },
     volumeInfo: {
       ...primary.volumeInfo,
-      title: displayTitle,
-      authors: displayAuthors,
-      description: displayDescription,
-      categories: displayCategories,
-      language: group.primary.languages?.[0] || group.work.language || primary.volumeInfo.language,
-      imageLinks: {
-        thumbnail: normalizeImageUrl(group.grouped_work.best_cover_url || primary.volumeInfo.imageLinks?.thumbnail),
-        smallThumbnail: normalizeImageUrl(group.grouped_work.best_cover_url || primary.volumeInfo.imageLinks?.smallThumbnail),
-      },
-      publisher: group.primary.publishers?.[0] || primary.volumeInfo.publisher,
-      publishedDate: group.primary.publish_date || primary.volumeInfo.publishedDate,
-      pageCount: group.primary.page_count || primary.volumeInfo.pageCount,
+      title: englishRecord.title.value || primary.volumeInfo.title,
+      series: englishRecord.series.value || primary.volumeInfo.series,
+      authors: englishRecord.authors.value || primary.volumeInfo.authors,
+      description: englishRecord.summary.value || primary.volumeInfo.description,
+      categories: englishRecord.genres.value || primary.volumeInfo.categories,
+      industryIdentifiers: allIdentifiers.length ? allIdentifiers : primary.volumeInfo.industryIdentifiers,
+      language: englishRecord.language.value || primary.volumeInfo.language,
+      imageLinks: englishRecord.cover.value
+        ? {
+            thumbnail: normalizeImageUrl(englishRecord.cover.value),
+            smallThumbnail: normalizeImageUrl(englishRecord.cover.value),
+          }
+        : primary.volumeInfo.imageLinks,
+      publisher: englishRecord.publisher.value || primary.volumeInfo.publisher,
+      publishedDate: englishRecord.publishedDate.value || primary.volumeInfo.publishedDate,
+      pageCount: englishRecord.pageCount.value || primary.volumeInfo.pageCount,
+      maturityRating: 'NOT_MATURE',
     },
     editions: editionVariants,
     editionCount: group.total_editions,
@@ -235,6 +242,7 @@ export function parseGoogleBook(book: GoogleBook) {
   return {
     google_books_id: book.id,
     title: info.title,
+    series: info.series || null,
     authors: info.authors || null,
     summary: info.description || null,
     genres: info.categories || null,
