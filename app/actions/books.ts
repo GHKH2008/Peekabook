@@ -23,6 +23,59 @@ type CustomBookInput = {
   publishedDate?: string
 }
 
+const DUPLICATE_BOOK_ERROR = 'This book is already in your library'
+
+function normalizeIdentifier(value: string | null | undefined): string | null {
+  const normalized = String(value || '').replace(/[^0-9X]/gi, '').toUpperCase()
+  return normalized || null
+}
+
+async function findDuplicateBookId(
+  userId: number,
+  bookData: ReturnType<typeof parseGoogleBook>
+): Promise<number | null> {
+  const checks: Array<{ column: 'google_books_id' | 'isbn_13' | 'isbn'; value: string | null }> = [
+    { column: 'google_books_id', value: bookData.google_books_id || null },
+    { column: 'isbn_13', value: normalizeIdentifier(bookData.isbn_13) },
+    { column: 'isbn', value: normalizeIdentifier(bookData.isbn) },
+  ]
+
+  for (const check of checks) {
+    if (!check.value) continue
+
+    const existing =
+      check.column === 'google_books_id'
+        ? await sql`
+            SELECT id
+            FROM books
+            WHERE user_id = ${userId}
+              AND google_books_id = ${check.value}
+            LIMIT 1
+          `
+        : check.column === 'isbn_13'
+          ? await sql`
+              SELECT id
+              FROM books
+              WHERE user_id = ${userId}
+                AND isbn_13 = ${check.value}
+              LIMIT 1
+            `
+          : await sql`
+              SELECT id
+              FROM books
+              WHERE user_id = ${userId}
+                AND isbn = ${check.value}
+              LIMIT 1
+            `
+
+    if (existing.length > 0) {
+      return existing[0].id as number
+    }
+  }
+
+  return null
+}
+
 export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActionResult> {
   const user = await requireAuth()
 
@@ -36,51 +89,13 @@ export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActi
   }
 
   const bookData = parseGoogleBook(enrichedBook)
+  bookData.isbn = normalizeIdentifier(bookData.isbn)
+  bookData.isbn_13 = normalizeIdentifier(bookData.isbn_13)
 
   try {
-    // Check duplicate by google id first
-    if (bookData.google_books_id) {
-      const existingByGoogleId = await sql`
-        SELECT id
-        FROM books
-        WHERE user_id = ${user.id}
-          AND google_books_id = ${bookData.google_books_id}
-        LIMIT 1
-      `
-
-      if (existingByGoogleId.length > 0) {
-        return { success: false, error: 'This book is already in your library' }
-      }
-    }
-
-    // Check duplicate by ISBN-13
-    if (bookData.isbn_13) {
-      const existingByIsbn13 = await sql`
-        SELECT id
-        FROM books
-        WHERE user_id = ${user.id}
-          AND isbn_13 = ${bookData.isbn_13}
-        LIMIT 1
-      `
-
-      if (existingByIsbn13.length > 0) {
-        return { success: false, error: 'This book is already in your library' }
-      }
-    }
-
-    // Check duplicate by ISBN-10
-    if (bookData.isbn) {
-      const existingByIsbn10 = await sql`
-        SELECT id
-        FROM books
-        WHERE user_id = ${user.id}
-          AND isbn = ${bookData.isbn}
-        LIMIT 1
-      `
-
-      if (existingByIsbn10.length > 0) {
-        return { success: false, error: 'This book is already in your library' }
-      }
+    const duplicateId = await findDuplicateBookId(user.id, bookData)
+    if (duplicateId) {
+      return { success: false, error: DUPLICATE_BOOK_ERROR, bookId: duplicateId }
     }
 
     const result = await sql`
@@ -123,6 +138,15 @@ export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActi
 
     return { success: true, bookId: result[0].id }
   } catch (error) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: string }).code === '23505'
+    ) {
+      return { success: false, error: DUPLICATE_BOOK_ERROR }
+    }
+
     console.error('Failed to add book to library', {
       error,
       bookData,

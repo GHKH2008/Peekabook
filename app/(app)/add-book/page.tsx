@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,169 @@ import { Search, BookOpen, Check, Plus, X } from 'lucide-react'
 import Image from 'next/image'
 import { searchBooks, addBookToLibrary, addCustomBookToLibrary } from '@/app/actions/books'
 import type { GoogleBook } from '@/lib/google-books'
+
+const HEBREW_RE = /[\u0590-\u05FF]/
+
+function normalizeText(value: string | null | undefined): string {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+}
+
+function normalizeIdentifier(value: string | null | undefined): string {
+  return String(value || '').replace(/[^0-9X]/gi, '').toUpperCase()
+}
+
+function normalizeLanguage(value: string | null | undefined): string | undefined {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return undefined
+  if (normalized.startsWith('he')) return 'he'
+  if (normalized.startsWith('en')) return 'en'
+  return normalized
+}
+
+function getBookIdentifier(book: GoogleBook, type: 'ISBN_13' | 'ISBN_10'): string | undefined {
+  const identifier = book.volumeInfo.industryIdentifiers?.find((item) => item.type === type)
+  const normalized = normalizeIdentifier(identifier?.identifier)
+  return normalized || undefined
+}
+
+function getBookGroupKey(book: GoogleBook): string {
+  const isbn13 = getBookIdentifier(book, 'ISBN_13')
+  if (isbn13) return `isbn13:${isbn13}`
+
+  const isbn10 = getBookIdentifier(book, 'ISBN_10')
+  if (isbn10) return `isbn10:${isbn10}`
+
+  const normalizedTitle = normalizeText(book.volumeInfo.title)
+  const normalizedAuthor = normalizeText(book.volumeInfo.authors?.[0])
+  return `title:${normalizedTitle}:author:${normalizedAuthor}`
+}
+
+function hasHebrewText(value: string | null | undefined): boolean {
+  return HEBREW_RE.test(String(value || ''))
+}
+
+function isLanguageCompatible(preferred: string | undefined, candidate: string | undefined): boolean {
+  if (!preferred || !candidate) return true
+  return preferred === candidate
+}
+
+function shouldAcceptCover(merged: GoogleBook, candidate: GoogleBook): boolean {
+  const cover = candidate.volumeInfo.imageLinks?.thumbnail || candidate.volumeInfo.imageLinks?.smallThumbnail
+  if (!cover) return false
+
+  const mergedText = `${merged.volumeInfo.title || ''} ${(merged.volumeInfo.authors || []).join(' ')}`
+  const candidateText = `${candidate.volumeInfo.title || ''} ${(candidate.volumeInfo.authors || []).join(' ')}`
+  const mergedHasHebrew = hasHebrewText(mergedText)
+  const candidateHasHebrew = hasHebrewText(candidateText)
+  if (mergedHasHebrew !== candidateHasHebrew) return false
+
+  const mergedLanguage = normalizeLanguage(merged.volumeInfo.language)
+  const candidateLanguage = normalizeLanguage(candidate.volumeInfo.language)
+  if (!isLanguageCompatible(mergedLanguage, candidateLanguage)) return false
+
+  return true
+}
+
+function pickBetterDescription(current: string | undefined, candidate: string | undefined): string | undefined {
+  if (!current) return candidate
+  if (!candidate) return current
+  return candidate.length > current.length ? candidate : current
+}
+
+function pickBetterPublishedDate(
+  current: string | undefined,
+  candidate: string | undefined
+): string | undefined {
+  if (!current) return candidate
+  if (!candidate) return current
+  return candidate.length > current.length ? candidate : current
+}
+
+function mergeBookGroup(books: GoogleBook[]): GoogleBook {
+  const preferredSourceOrder: Array<GoogleBook['source']> = ['google', 'openlibrary', 'gutendex', 'wikipedia']
+  const sorted = [...books].sort((a, b) => {
+    const ai = preferredSourceOrder.indexOf(a.source)
+    const bi = preferredSourceOrder.indexOf(b.source)
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+  })
+
+  const base = sorted[0]
+  const identifierMap = new Map<string, { type: string; identifier: string }>()
+
+  for (const book of sorted) {
+    for (const identifier of book.volumeInfo.industryIdentifiers || []) {
+      const normalized = normalizeIdentifier(identifier.identifier)
+      if (!normalized) continue
+      identifierMap.set(`${identifier.type}:${normalized}`, {
+        type: identifier.type,
+        identifier: normalized,
+      })
+    }
+  }
+
+  let merged: GoogleBook = {
+    ...base,
+    volumeInfo: {
+      ...base.volumeInfo,
+      industryIdentifiers: Array.from(identifierMap.values()),
+    },
+  }
+
+  for (const candidate of sorted.slice(1)) {
+    const candidateCover = candidate.volumeInfo.imageLinks?.thumbnail || candidate.volumeInfo.imageLinks?.smallThumbnail
+    const mergedCover = merged.volumeInfo.imageLinks?.thumbnail || merged.volumeInfo.imageLinks?.smallThumbnail
+
+    merged = {
+      ...merged,
+      volumeInfo: {
+        ...merged.volumeInfo,
+        title: merged.volumeInfo.title || candidate.volumeInfo.title,
+        authors:
+          merged.volumeInfo.authors?.length
+            ? merged.volumeInfo.authors
+            : candidate.volumeInfo.authors,
+        description: pickBetterDescription(merged.volumeInfo.description, candidate.volumeInfo.description),
+        categories:
+          merged.volumeInfo.categories?.length
+            ? merged.volumeInfo.categories
+            : candidate.volumeInfo.categories,
+        industryIdentifiers: Array.from(identifierMap.values()),
+        language: normalizeLanguage(merged.volumeInfo.language) || normalizeLanguage(candidate.volumeInfo.language),
+        imageLinks:
+          mergedCover || !candidateCover || !shouldAcceptCover(merged, candidate)
+            ? merged.volumeInfo.imageLinks
+            : candidate.volumeInfo.imageLinks,
+        publisher: merged.volumeInfo.publisher || candidate.volumeInfo.publisher,
+        publishedDate: pickBetterPublishedDate(merged.volumeInfo.publishedDate, candidate.volumeInfo.publishedDate),
+        pageCount: merged.volumeInfo.pageCount || candidate.volumeInfo.pageCount,
+        maturityRating: merged.volumeInfo.maturityRating || candidate.volumeInfo.maturityRating,
+      },
+    }
+  }
+
+  return merged
+}
+
+function combineDuplicateSearchResults(books: GoogleBook[]): GoogleBook[] {
+  const grouped = new Map<string, GoogleBook[]>()
+
+  for (const book of books) {
+    const key = getBookGroupKey(book)
+    const group = grouped.get(key)
+    if (group) {
+      group.push(book)
+    } else {
+      grouped.set(key, [book])
+    }
+  }
+
+  return Array.from(grouped.values()).map((group) => mergeBookGroup(group))
+}
 
 export default function AddBookPage() {
   const [query, setQuery] = useState('')
@@ -42,8 +205,9 @@ export default function AddBookPage() {
     setError(null)
     try {
       const books = await searchBooks(query, language || undefined)
-      setResults(books)
-      if (books.length === 0) {
+      const combinedBooks = combineDuplicateSearchResults(books)
+      setResults(combinedBooks)
+      if (combinedBooks.length === 0) {
         setError('No books found. Try a different search term.')
       }
     } catch (err) {
@@ -86,30 +250,31 @@ export default function AddBookPage() {
   }
 
   async function handleAddBook(book: GoogleBook) {
-  setAddingBookId(book.id)
-  setError(null)
+    setAddingBookId(book.id)
+    setError(null)
 
-  try {
-    const result = await addBookToLibrary(book)
+    try {
+      const result = await addBookToLibrary(book)
 
-    if (result.success) {
-      setAddedBooks(prev => new Set([...prev, book.id]))
-    } else {
-      setError(result.error || 'Failed to add book')
+      if (result.success) {
+        setAddedBooks((prev) => new Set([...prev, book.id]))
+      } else {
+        console.error('Add book rejected:', { bookId: book.id, error: result.error })
+        setError(result.error || 'Failed to add book')
+      }
+
+    } catch (error) {
+      console.error('Add book failed:', error)
+
+      setError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to add book. Check console.'
+      )
+    } finally {
+      setAddingBookId(null)
     }
-
-  } catch (error) {
-    console.error('Add book failed:', error)
-
-    setError(
-      error instanceof Error
-        ? error.message
-        : 'Failed to add book. Check console.'
-    )
-  } finally {
-    setAddingBookId(null)
   }
-}
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
