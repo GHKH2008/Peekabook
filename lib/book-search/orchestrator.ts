@@ -2,7 +2,6 @@ import { readCache, writeCache } from './cache'
 import { buildSearchVariants, normalizeQuery } from './normalize'
 import { mergeCandidates, computeGroupScore } from './merge'
 import { getBookProviders } from './providers'
-import { amazonProvider } from './providers/amazon'
 import { rankResults, scoreCandidate } from './ranker'
 import type { BookCandidate, CandidateDebugLog, SearchOrchestratorOptions, SearchResponse } from './types'
 
