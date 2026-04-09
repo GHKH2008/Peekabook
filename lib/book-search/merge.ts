@@ -147,6 +147,27 @@ function hasConflictingStrongIdentity(a: BookIdentityKeys, b: BookIdentityKeys):
   return blocked
 }
 
+function authorSimilarityScore(authorA: string, authorB: string): { score: number; reason?: string } {
+  if (!authorA || !authorB) return { score: 0 }
+  if (authorA === authorB) return { score: 28, reason: 'author_exact_normalized' }
+
+  if (authorA.includes(authorB) || authorB.includes(authorA)) {
+    return { score: 22, reason: 'author_contains_normalized' }
+  }
+
+  const tokensA = new Set(authorA.split(' ').filter(Boolean))
+  const tokensB = new Set(authorB.split(' ').filter(Boolean))
+  let overlap = 0
+  for (const t of Array.from(tokensA)) {
+    if (tokensB.has(t)) overlap += 1
+  }
+
+  if (overlap >= 2) return { score: 18, reason: 'author_token_overlap' }
+  if (overlap === 1 && (tokensA.size <= 2 || tokensB.size <= 2)) return { score: 12, reason: 'author_partial_overlap' }
+
+  return { score: 0 }
+}
+
 function textFallbackScore(a: NormalizedBookResult, b: NormalizedBookResult): { score: number; reasons: string[] } {
   const reasons: string[] = []
   let score = 0
@@ -157,18 +178,27 @@ function textFallbackScore(a: NormalizedBookResult, b: NormalizedBookResult): { 
   const authorB = normalizeText(b.authors[0] || '')
 
   if (titleA && titleB && titleA === titleB) {
-    score += 35
+    score += 42
     reasons.push('title_exact_normalized')
+  } else if (titleA && titleB && (titleA.includes(titleB) || titleB.includes(titleA))) {
+    score += 26
+    reasons.push('title_contains_normalized')
   }
 
-  if (authorA && authorB && authorA === authorB) {
-    score += 28
-    reasons.push('author_exact_normalized')
-  }
+  const authorSimilarity = authorSimilarityScore(authorA, authorB)
+  score += authorSimilarity.score
+  if (authorSimilarity.reason) reasons.push(authorSimilarity.reason)
 
   if (a.language && b.language && a.language === b.language) {
-    score += 6
+    score += 8
     reasons.push('language_exact')
+  }
+
+  const yearA = (a.published_date || '').match(/\d{4}/)?.[0]
+  const yearB = (b.published_date || '').match(/\d{4}/)?.[0]
+  if (yearA && yearB && Math.abs(Number(yearA) - Number(yearB)) >= 15) {
+    score -= 8
+    reasons.push('publication_year_far_apart')
   }
 
   return { score, reasons }
@@ -355,15 +385,16 @@ export function mergeCandidates(
       const matchScore = identity.score + text.score
       const reasons = [...identity.reasons, ...text.reasons]
 
+      const dynamicThreshold = identity.score > 0 ? 40 : 50
+
       logs.push({
         workKey: buildWorkKey(lead),
         candidateId: `${candidate.source}:${candidate.source_id}`,
-        matched: matchScore >= 60,
+        matched: matchScore >= dynamicThreshold,
         score: matchScore,
         reasons,
       })
-
-      if (matchScore >= 60) {
+      if (matchScore >= dynamicThreshold) {
         const confidence = Math.max(0.5, Math.min(1, matchScore / 100))
         decisions.push({ kept: `${lead.source}:${lead.source_id}`, merged: `${candidate.source}:${candidate.source_id}`, confidence, reasons })
         cluster.push(candidate)

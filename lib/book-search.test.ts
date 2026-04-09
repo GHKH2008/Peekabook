@@ -51,6 +51,13 @@ export function testAuthorSpellingVariationMerges() {
   assert.equal(merged.groupedResults.length, 1)
 }
 
+export function testAuthorMiddleInitialFallbackMerge() {
+  const a = makeResult({ source: 'openlibrary', source_id: 'a2', title: 'Unsouled', authors: ['Will Wight'], published_date: '2017' })
+  const b = makeResult({ source: 'openlibrary', source_id: 'b2', title: 'Unsouled', authors: ['Will L. Wight'], published_date: '2023' })
+  const merged = mergeCandidates([a, b])
+  assert.equal(merged.groupedResults.length, 1)
+}
+
 export function testDifferentOpenLibraryWorksDoNotMergeByTitleFallback() {
   const a = makeResult({
     source: 'openlibrary',
@@ -98,6 +105,7 @@ export function runBookSearchTests() {
   testHebrewRankingBoost()
   testSameTitleDifferentBooksNotMerged()
   testAuthorSpellingVariationMerges()
+  testAuthorMiddleInitialFallbackMerge()
   testDifferentOpenLibraryWorksDoNotMergeByTitleFallback()
   testOpenLibraryWorkIdentityPreferredGrouping()
 }
