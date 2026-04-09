@@ -1,6 +1,6 @@
 import type { BookSearchProvider } from './interface'
-import { fetchHtml, readMetaContent, withAttribution } from './utils'
-import type { BookProviderName, NormalizedBookResult, ProviderSearchOptions } from '../types'
+import { fetchHtml, makeCandidate, readMetaContent } from './utils'
+import type { BookProviderName, BookCandidate, ProviderSearchOptions } from '../types'
 
 type HtmlProviderConfig = {
   name: BookProviderName
@@ -9,59 +9,44 @@ type HtmlProviderConfig = {
 }
 
 export function createHtmlMetadataProvider(config: HtmlProviderConfig): BookSearchProvider {
+  async function parseUrl(url: string, timeoutMs?: number): Promise<BookCandidate | null> {
+    const html = await fetchHtml(url, timeoutMs)
+    if (!html) return null
+    const title = readMetaContent(html, 'og:title') || readMetaContent(html, 'twitter:title')
+    if (!title) return null
+    const description = readMetaContent(html, 'og:description')
+    const cover = readMetaContent(html, 'og:image')
+    const canonical = readMetaContent(html, 'og:url') || url
+
+    return makeCandidate({
+      source: config.name,
+      sourceId: canonical,
+      sourceEditionId: canonical,
+      sourceUrl: canonical,
+      title,
+      authors: [],
+      description,
+      languages: /[\u0590-\u05FF]/.test(title) ? ['he'] : [],
+      coverUrl: cover,
+      raw: { url, htmlSnippet: html.slice(0, 1200) },
+    })
+  }
+
   return {
     name: config.name,
     enabled: () => process.env[config.allowEnv] === 'true',
-    async search(query: string, options?: ProviderSearchOptions): Promise<NormalizedBookResult[]> {
+    async search(query: string, _language?: string, _limit = 20, options?: ProviderSearchOptions): Promise<BookCandidate[]> {
       if (!this.enabled()) return []
-      const url = config.searchUrl(query)
-      const html = await fetchHtml(url, options?.timeoutMs)
-      if (!html) return []
-
-      const title = readMetaContent(html, 'og:title') || readMetaContent(html, 'twitter:title')
-      if (!title) return []
-
-      const description = readMetaContent(html, 'og:description')
-      const cover = readMetaContent(html, 'og:image')
-      const canonical = readMetaContent(html, 'og:url') || url
-      const priceRaw = html.match(/(?:₪|NIS)\s?([0-9]+(?:\.[0-9]{1,2})?)/i)?.[1]
-      const price = priceRaw ? Number(priceRaw) : undefined
-
-      return [
-        withAttribution(
-          {
-            source: config.name,
-            source_id: canonical,
-            title,
-            authors: [],
-            description,
-            language: /[\u0590-\u05FF]/.test(title) ? 'he' : undefined,
-            cover_image: cover,
-            thumbnail_image: cover,
-            price,
-            currency: price ? 'ILS' : undefined,
-            canonical_url: canonical,
-            raw_source_data: { url, htmlSnippet: html.slice(0, 1200) },
-          },
-          ['title', 'description', 'cover_image', 'price']
-        ),
-      ]
+      const candidate = await parseUrl(config.searchUrl(query), options?.timeoutMs)
+      return candidate ? [candidate] : []
     },
-    async lookupByExternalId(id: string) {
+    async getWorkDetails(id: string, options?: ProviderSearchOptions) {
       if (!this.enabled()) return null
-      const html = await fetchHtml(id)
-      if (!html) return null
-      const title = readMetaContent(html, 'og:title')
-      if (!title) return null
-      return {
-        source: config.name,
-        source_id: id,
-        title,
-        authors: [],
-        canonical_url: id,
-        raw_source_data: { htmlSnippet: html.slice(0, 1200) },
-        source_attribution: [{ source: config.name, source_id: id, source_url: id, fields: ['title'] }],
-      }
+      return await parseUrl(id, options?.timeoutMs)
+    },
+    async getEditionDetails(id: string, options?: ProviderSearchOptions) {
+      if (!this.enabled()) return null
+      return await parseUrl(id, options?.timeoutMs)
     },
   }
 }

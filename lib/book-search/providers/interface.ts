@@ -1,4 +1,4 @@
-import type { NormalizedBookResult, ProviderSearchOptions } from '../types'
+import type { BookCandidate, ProviderSearchOptions } from '../types'
 
 export type ProviderCapabilities = {
   supportsIsbnSearch?: boolean
@@ -8,9 +8,10 @@ export type ProviderCapabilities = {
 }
 
 export interface BookSearchProvider {
-  name: NormalizedBookResult['source']
+  name: BookCandidate['source']
   capabilities?: ProviderCapabilities
   enabled(): boolean
-  search(query: string, options?: ProviderSearchOptions): Promise<NormalizedBookResult[]>
-  lookupByExternalId(id: string, options?: ProviderSearchOptions): Promise<NormalizedBookResult | null>
+  search(query: string, language?: string, limit?: number, options?: ProviderSearchOptions): Promise<BookCandidate[]>
+  getWorkDetails(id: string, options?: ProviderSearchOptions): Promise<BookCandidate | null>
+  getEditionDetails(id: string, options?: ProviderSearchOptions): Promise<BookCandidate | null>
 }

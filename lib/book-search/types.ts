@@ -9,16 +9,30 @@ export type BookProviderName =
 export type SearchDebugInfo = {
   providerTimings: Record<string, number>
   providerErrors: Array<{ provider: BookProviderName; message: string }>
+  candidateLogs?: CandidateDebugLog[]
+  clusterLogs?: ClusterDebugLog[]
   ranking?: Array<{ id: string; score: number; reasons: string[] }>
-  mergeDecisions?: Array<{ kept: string; merged: string; confidence: number; reasons: string[] }>
-  mergeLogs?: Array<{
-    workKey: string
-    candidateId: string
-    matched: boolean
-    score: number
-    reasons: string[]
-    blockedBy?: string[]
-  }>
+}
+
+export type CandidateDebugLog = {
+  source: BookProviderName
+  source_ids: { work?: string; edition?: string; source: string }
+  raw_title: string
+  normalized_title: string
+  authors: string[]
+  language?: string
+  isbns: string[]
+  score_breakdown: Record<string, number>
+  work_key_candidate: string
+}
+
+export type ClusterDebugLog = {
+  canonical_work_key: string
+  merged_candidate_ids: string[]
+  merge_confidence: number
+  merge_reasons: string[]
+  representative_candidate_id: string
+  excluded_candidate_ids: string[]
 }
 
 export type BookIdentityKeys = {
@@ -27,6 +41,72 @@ export type BookIdentityKeys = {
   google_volume_id?: string
   internal_book_code?: string
   isbns: string[]
+}
+
+export type QueryPlan = {
+  raw_query: string
+  normalized_query: string
+  tokenized_query: string[]
+  query_without_punctuation: string
+  compact_query: string
+  language_guess: 'he' | 'en' | 'unknown'
+  isbn_candidates: string[]
+  phrase_query: string
+  significant_tokens: string[]
+  stopword_light_query: string
+  typo_tolerant_query: string
+}
+
+export type BookCandidate = {
+  source: BookProviderName
+  source_work_id?: string
+  source_edition_id?: string
+  source_url?: string
+
+  title: string
+  subtitle?: string
+  authors: string[]
+  contributors?: string[]
+  description?: string
+  languages?: string[]
+  subjects?: string[]
+  publishers?: string[]
+  publish_year?: number
+  publish_date?: string
+  isbn10?: string[]
+  isbn13?: string[]
+  identifiers?: string[]
+  cover_url?: string
+  page_count?: number
+  format?: string
+  edition_label?: string
+
+  raw_title_normalized: string
+  raw_authors_normalized: string[]
+  title_key: string
+  author_key: string
+  work_key_candidate: string
+
+  source_confidence: number
+  metadata_completeness_score: number
+  title_match_score: number
+  author_match_score: number
+  isbn_match_score: number
+  language_match_score: number
+  retailer_match_score: number
+  overall_candidate_score: number
+
+  is_hebrew: boolean
+  is_edition: boolean
+  retailer_data?: Array<Record<string, unknown>>
+  identity_keys?: BookIdentityKeys
+  source_attribution?: Array<{
+    source: BookProviderName
+    source_url?: string
+    source_id: string
+    fields: string[]
+  }>
+  raw?: unknown
 }
 
 export type CatalogWork = {
@@ -61,65 +141,39 @@ export type CatalogEdition = {
   raw_payloads: Array<{ source: BookProviderName; payload: unknown }>
 }
 
-export type UserCopy = {
-  owner_user_id: number
-  visibility: 'public' | 'friends' | 'private'
-  availability: 'available' | 'requested' | 'loaned' | 'unavailable'
-  condition?: string
-  notes?: string
-  local_cover_override?: string
-}
-
-export type NormalizedBookResult = {
-  source: BookProviderName
-  source_id: string
-  title: string
-  subtitle?: string
-  authors: string[]
-  description?: string
-  language?: string
-  publisher?: string
-  published_date?: string
-  isbn_10?: string
-  isbn_13?: string
-  page_count?: number
-  categories?: string[]
-  cover_image?: string
-  thumbnail_image?: string
-  format?: string
-  series?: string
-  volume?: string
-  price?: number
-  currency?: string
-  availability?: string
-  canonical_url?: string
-  rating?: number
-  rating_count?: number
-  raw_source_data?: unknown
-  identity_keys?: BookIdentityKeys
-  source_attribution?: Array<{
-    source: BookProviderName
-    source_url?: string
-    source_id: string
-    fields: string[]
-  }>
-  work?: Partial<CatalogWork>
-  edition?: Partial<CatalogEdition>
+export type GroupedWork = {
+  canonical_work_key: string
+  best_title: string
+  best_subtitle?: string
+  best_authors: string[]
+  best_description?: string
+  best_cover_url?: string
+  languages: string[]
+  subjects: string[]
+  representative_publish_year?: number
+  source_summary: BookProviderName[]
+  editions: BookCandidate[]
+  retailers: Array<Record<string, unknown>>
+  confidence_score: number
+  warnings: string[]
 }
 
 export type GroupedBookResult = {
   group_id: string
   work: CatalogWork
-  primary: NormalizedBookResult
-  editions: NormalizedBookResult[]
+  grouped_work: GroupedWork
+  primary: BookCandidate
+  editions: BookCandidate[]
   edition_records: CatalogEdition[]
   total_editions: number
+  group_score: number
 }
 
 export type ProviderSearchOptions = {
   language?: string
   timeoutMs?: number
   debug?: boolean
+  limit?: number
 }
 
 export type SearchOrchestratorOptions = ProviderSearchOptions & {
@@ -127,6 +181,12 @@ export type SearchOrchestratorOptions = ProviderSearchOptions & {
 }
 
 export type SearchResponse = {
+  query: QueryPlan
+  total_raw_candidates: number
+  total_grouped_works: number
   results: GroupedBookResult[]
   debug?: SearchDebugInfo
 }
+
+// Backward-compat aliases for existing call sites.
+export type NormalizedBookResult = BookCandidate

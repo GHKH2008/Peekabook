@@ -1397,12 +1397,12 @@ export async function searchGoogleBooks(query: string, langRestrict?: string): P
 
 function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBook {
   const identifiers = [
-    result.isbn_10 ? { type: 'ISBN_10', identifier: result.isbn_10 } : null,
-    result.isbn_13 ? { type: 'ISBN_13', identifier: result.isbn_13 } : null,
+    result.isbn10?.[0] ? { type: 'ISBN_10', identifier: result.isbn10[0] } : null,
+    result.isbn13?.[0] ? { type: 'ISBN_13', identifier: result.isbn13[0] } : null,
   ].filter((value): value is { type: string; identifier: string } => Boolean(value))
 
   return {
-    id: `${result.source}:${result.source_id}`,
+    id: `${result.source}:${result.source_edition_id || result.source_work_id || result.title_key}`,
     source: result.source,
     sourceTrace: Array.from(new Set([result.source, ...(result.source_attribution || []).map((item) => item.source)])),
     sourceDetails: {
@@ -1420,15 +1420,15 @@ function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBo
       subtitle: result.subtitle,
       authors: result.authors,
       description: result.description,
-      categories: result.categories,
+      categories: result.subjects,
       industryIdentifiers: identifiers,
-      language: result.language,
+      language: result.languages?.[0],
       imageLinks: {
-        thumbnail: result.cover_image,
-        smallThumbnail: result.thumbnail_image || result.cover_image,
+        thumbnail: result.cover_url,
+        smallThumbnail: result.cover_url,
       },
-      publisher: result.publisher,
-      publishedDate: result.published_date,
+      publisher: result.publishers?.[0],
+      publishedDate: result.publish_date,
       pageCount: result.page_count,
       maturityRating: 'NOT_MATURE',
     },
@@ -1440,18 +1440,22 @@ function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
   const seenEditionKeys = new Set<string>()
   const seenEditionSignatures = new Set<string>()
   const editionVariants = group.editions
-    .filter((edition) => `${edition.source}:${edition.source_id}` !== `${group.primary.source}:${group.primary.source_id}`)
+    .filter(
+      (edition) =>
+        `${edition.source}:${edition.source_edition_id || edition.source_work_id || edition.title_key}` !==
+        `${group.primary.source}:${group.primary.source_edition_id || group.primary.source_work_id || group.primary.title_key}`
+    )
     .filter((edition) => {
-      const key = `${edition.source}:${edition.source_id}`
+      const key = `${edition.source}:${edition.source_edition_id || edition.source_work_id || edition.title_key}`
       if (seenEditionKeys.has(key)) return false
       seenEditionKeys.add(key)
-      const isbn = [edition.isbn_13, edition.isbn_10].find(Boolean) || ''
-      const year = edition.published_date?.match(/\d{4}/)?.[0] || ''
+      const isbn = [edition.isbn13?.[0], edition.isbn10?.[0]].find(Boolean) || ''
+      const year = edition.publish_date?.match(/\d{4}/)?.[0] || ''
       const signature = [
         stripPunctuation(edition.title),
         stripPunctuation((edition.authors || [])[0] || ''),
-        stripPunctuation(edition.publisher || ''),
-        stripPunctuation(edition.language || ''),
+        stripPunctuation((edition.publishers || [])[0] || ''),
+        stripPunctuation((edition.languages || [])[0] || ''),
         year,
         isbn,
       ].join('::')
