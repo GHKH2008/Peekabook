@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
-import { Search, BookOpen, Check } from 'lucide-react'
+import { Search, BookOpen, Check, Plus, X } from 'lucide-react'
 import Image from 'next/image'
 import { searchBooks, addBookToLibrary, addCustomBookToLibrary } from '@/app/actions/books'
 import type { GoogleBook } from '@/lib/google-books'
@@ -32,6 +32,7 @@ export default function AddBookPage() {
   const [customSummary, setCustomSummary] = useState('')
   const [customPublisher, setCustomPublisher] = useState('')
   const [customPublishedDate, setCustomPublishedDate] = useState('')
+  const [showManualForm, setShowManualForm] = useState(false)
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
@@ -151,67 +152,80 @@ export default function AddBookPage() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Add Manually</CardTitle>
-          <CardDescription>
-            Can&apos;t find your book? Add it manually with title, author, summary and more.
-          </CardDescription>
+        <CardHeader className="space-y-4">
+          <div>
+            <CardTitle>Add Manually</CardTitle>
+            <CardDescription>
+              Can&apos;t find your book? Add it manually with title, author, summary and more.
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant={showManualForm ? 'secondary' : 'default'}
+            className="w-fit gap-2"
+            onClick={() => setShowManualForm((prev) => !prev)}
+          >
+            {showManualForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            {showManualForm ? 'Hide Manual Form' : 'Add Manually'}
+          </Button>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={handleAddCustomBook} className="space-y-4">
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="custom-title">Title *</FieldLabel>
-                <Input
-                  id="custom-title"
-                  value={customTitle}
-                  onChange={(e) => setCustomTitle(e.target.value)}
-                  placeholder="Book title"
-                  required
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="custom-author">Author</FieldLabel>
-                <Input
-                  id="custom-author"
-                  value={customAuthor}
-                  onChange={(e) => setCustomAuthor(e.target.value)}
-                  placeholder="Author name"
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="custom-summary">Summary</FieldLabel>
-                <Input
-                  id="custom-summary"
-                  value={customSummary}
-                  onChange={(e) => setCustomSummary(e.target.value)}
-                  placeholder="Brief summary"
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="custom-publisher">Publisher</FieldLabel>
-                <Input
-                  id="custom-publisher"
-                  value={customPublisher}
-                  onChange={(e) => setCustomPublisher(e.target.value)}
-                  placeholder="Publisher"
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="custom-published-date">Published Date</FieldLabel>
-                <Input
-                  id="custom-published-date"
-                  value={customPublishedDate}
-                  onChange={(e) => setCustomPublishedDate(e.target.value)}
-                  placeholder="e.g. 2023 or 2023-06-01"
-                />
-              </Field>
-            </FieldGroup>
-            <Button type="submit" disabled={customPending || !customTitle.trim()}>
-              {customPending ? 'Adding...' : 'Add Manually'}
-            </Button>
-          </form>
-        </CardContent>
+        {showManualForm && (
+          <CardContent>
+            <form onSubmit={handleAddCustomBook} className="space-y-4">
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="custom-title">Title *</FieldLabel>
+                  <Input
+                    id="custom-title"
+                    value={customTitle}
+                    onChange={(e) => setCustomTitle(e.target.value)}
+                    placeholder="Book title"
+                    required
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="custom-author">Author</FieldLabel>
+                  <Input
+                    id="custom-author"
+                    value={customAuthor}
+                    onChange={(e) => setCustomAuthor(e.target.value)}
+                    placeholder="Author name"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="custom-summary">Summary</FieldLabel>
+                  <Input
+                    id="custom-summary"
+                    value={customSummary}
+                    onChange={(e) => setCustomSummary(e.target.value)}
+                    placeholder="Brief summary"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="custom-publisher">Publisher</FieldLabel>
+                  <Input
+                    id="custom-publisher"
+                    value={customPublisher}
+                    onChange={(e) => setCustomPublisher(e.target.value)}
+                    placeholder="Publisher"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="custom-published-date">Published Date</FieldLabel>
+                  <Input
+                    id="custom-published-date"
+                    value={customPublishedDate}
+                    onChange={(e) => setCustomPublishedDate(e.target.value)}
+                    placeholder="e.g. 2023 or 2023-06-01"
+                  />
+                </Field>
+              </FieldGroup>
+              <Button type="submit" disabled={customPending || !customTitle.trim()}>
+                {customPending ? 'Adding...' : 'Add Manually'}
+              </Button>
+            </form>
+          </CardContent>
+        )}
       </Card>
 
       {error && (
