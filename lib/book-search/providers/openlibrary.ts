@@ -29,7 +29,7 @@ function mapSearchDoc(doc: any): BookCandidate {
     subtitle: doc.subtitle,
     authors: doc.author_name || [],
     description: typeof doc.description === 'string' ? doc.description : doc.description?.value,
-    languages: doc.language || [],
+    languages: (doc.language || []).map((lang: string) => String(lang).replace('/languages/', '')),
     subjects: doc.subject?.slice(0, 10) || [],
     publishers: doc.publisher?.slice(0, 2) || [],
     publishDate: doc.first_publish_year ? String(doc.first_publish_year) : undefined,
@@ -45,9 +45,13 @@ export const openLibraryProvider: BookSearchProvider = {
   capabilities: { supportsIsbnSearch: true, supportsAuthorSearch: true, supportsLanguageFilter: true, preferredForHebrew: true },
   name: 'openlibrary',
   enabled: () => true,
-  async search(query: string, _language?: string, limit = 100, options?: ProviderSearchOptions): Promise<BookCandidate[]> {
-    const data = await fetchJson(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=${Math.min(limit, 100)}`, options?.timeoutMs)
-    return (data?.docs || []).map(mapSearchDoc)
+  async search(query: string, language?: string, limit = 100, options?: ProviderSearchOptions): Promise<BookCandidate[]> {
+    const languageCode = language === 'he' ? 'heb' : language === 'en' ? 'eng' : undefined
+    const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=${Math.min(limit, 100)}${languageCode ? `&language=${languageCode}` : ''}`
+    const data = await fetchJson(url, options?.timeoutMs)
+    const docs = (data?.docs || []).map(mapSearchDoc)
+    if (language !== 'he') return docs
+    return docs.filter((item: BookCandidate) => (item.languages || []).some((lang: string) => /heb|he/i.test(lang)))
   },
   async getWorkDetails(id: string, options?: ProviderSearchOptions) {
     const key = id.startsWith('/') ? id : `/works/${id}`

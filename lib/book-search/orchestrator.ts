@@ -7,8 +7,10 @@ import { rankResults, scoreCandidate } from './ranker'
 import type { BookCandidate, CandidateDebugLog, SearchOrchestratorOptions, SearchResponse } from './types'
 
 const CACHE_TTL_MS = 1000 * 60 * 5
-const DEFAULT_PER_SOURCE_LIMIT = 70
-const RETAILER_SOURCES = new Set(['steimatzky', 'booknet', 'indiebook', 'simania'])
+const DEFAULT_PER_SOURCE_LIMIT = 60
+
+const FLOW_EN = ['amazon', 'google', 'openlibrary', 'steimatzky', 'booknet', 'indiebook', 'simania'] as const
+const FLOW_HE = ['google', 'openlibrary', 'steimatzky', 'booknet', 'indiebook', 'simania'] as const
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T> {
   return await Promise.race([
@@ -17,88 +19,94 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T>
   ])
 }
 
-function fanoutStrategies(query: ReturnType<typeof normalizeQuery>): string[] {
+function buildStrategyPlan(query: ReturnType<typeof normalizeQuery>): string[] {
   const variants = buildSearchVariants(query.raw_query)
-  const base = [
-    query.phrase_query,
-    query.stopword_light_query,
-    query.tokenized_query.join(' '),
-    `${query.significant_tokens.join(' ')} ${query.tokenized_query.slice(0, 2).join(' ')}`.trim(),
-    ...query.isbn_candidates,
-    ...variants,
-  ]
-  return Array.from(new Set(base.filter(Boolean))).slice(0, 8)
-}
-
-function sourcePriority(source: BookCandidate['source'], languageGuess: string): number {
-  const base: Record<string, number> = {
-    google: 100,
-    openlibrary: 90,
-    amazon: 40,
-    steimatzky: languageGuess === 'he' ? 85 : 55,
-    booknet: languageGuess === 'he' ? 82 : 52,
-    indiebook: languageGuess === 'he' ? 80 : 50,
-    simania: languageGuess === 'he' ? 78 : 48,
+  if (query.language_guess === 'en') {
+    return Array.from(
+      new Set([
+        ...query.isbn_candidates,
+        `${query.phrase_query}`.trim(),
+        query.phrase_query,
+        `${query.stopword_light_query}`.trim(),
+        variants.find((v) => !v.includes(':')),
+      ].filter((value): value is string => Boolean(value && value.trim())))
+    )
   }
-  return base[source] || 40
+  return Array.from(new Set([query.phrase_query, `${query.phrase_query} ${query.significant_tokens[0] || ''}`.trim(), query.query_without_punctuation, ...variants]))
 }
 
 export async function searchBooksOrchestrated(query: string, options: SearchOrchestratorOptions = {}): Promise<SearchResponse> {
   const normalized = query.trim()
   const queryPlan = normalizeQuery(normalized)
-  if (!normalized) {
-    return { query: queryPlan, total_raw_candidates: 0, total_grouped_works: 0, results: [] }
-  }
+  if (!normalized) return { query: queryPlan, total_raw_candidates: 0, total_grouped_works: 0, results: [] }
 
-  const cacheKey = `book-search:v2:${queryPlan.normalized_query}:${options.language || queryPlan.language_guess}:${options.maxResults || 100}`
+  const cacheKey = `book-search:v3:${queryPlan.normalized_query}:${options.language || queryPlan.language_guess}:${options.maxResults || 100}`
   const cached = readCache<SearchResponse>(cacheKey)
   if (cached) return cached
 
-  const providers = getBookProviders().filter(({ provider }) => provider.enabled())
-  const orderedProviders = providers.sort((a, b) => b.priority - a.priority)
-  const strategies = fanoutStrategies(queryPlan)
+  const providerMap = new Map(getBookProviders().map(({ provider }) => [provider.name, provider]))
+  const flow = (queryPlan.language_guess === 'he' ? FLOW_HE : FLOW_EN).filter((name) => providerMap.get(name)?.enabled())
+  const strategies = buildStrategyPlan(queryPlan)
 
   const providerTimings: Record<string, number> = {}
   const providerErrors: Array<{ provider: any; message: string }> = []
   const rawCandidates: BookCandidate[] = []
+  const debugSteps: string[] = []
 
-  await Promise.all(
-    orderedProviders.map(async ({ provider }) => {
-      const start = Date.now()
-      try {
-        const tasks = strategies.map((variant) =>
-          withTimeout(provider.search(variant, options.language || queryPlan.language_guess, options.limit || DEFAULT_PER_SOURCE_LIMIT, options), options.timeoutMs || 5000)
+  for (const sourceName of flow) {
+    const provider = providerMap.get(sourceName)
+    if (!provider) continue
+    const start = Date.now()
+    debugSteps.push(`source:start:${sourceName}`)
+    try {
+      let sourceCount = 0
+      for (const strategy of strategies.slice(0, 6)) {
+        const batch = await withTimeout(
+          provider.search(strategy, options.language || queryPlan.language_guess, options.limit || DEFAULT_PER_SOURCE_LIMIT, options),
+          options.timeoutMs || 5000
         )
-        const batches = await Promise.allSettled(tasks)
-        batches.forEach((batch) => {
-          if (batch.status === 'fulfilled') rawCandidates.push(...batch.value)
-        })
-      } catch (error) {
-        providerErrors.push({ provider: provider.name, message: error instanceof Error ? error.message : 'unknown error' })
+        const scored = batch.map((candidate) => scoreCandidate(candidate, queryPlan, options.language))
+        rawCandidates.push(...scored)
+        sourceCount += batch.length
       }
-      providerTimings[provider.name] = Date.now() - start
-    })
-  )
+      debugSteps.push(`source:end:${sourceName}:count=${sourceCount}`)
+    } catch (error) {
+      providerErrors.push({ provider: provider.name, message: error instanceof Error ? error.message : 'unknown error' })
+      debugSteps.push(`source:error:${sourceName}`)
+    }
+    providerTimings[sourceName] = Date.now() - start
+  }
 
-  const scoredCandidates = rawCandidates.map((candidate) => scoreCandidate(candidate, queryPlan, options.language))
+  const rankedCandidates = rankResults(rawCandidates, query, options.language)
   const amazonEnrichedCandidates =
     queryPlan.language_guess === 'en'
       ? (
           await Promise.all(
-            scoredCandidates.map(async (candidate) => {
+            rankedCandidates.map(async (candidate) => {
               const isbn = [...(candidate.isbn13 || []), ...(candidate.isbn10 || [])].find((value) => value?.length === 13 || value?.length === 10)
               if (!isbn) return null
               const amazon = await amazonProvider.getEditionDetails(isbn, { ...options, language: options.language || queryPlan.language_guess })
               if (!amazon) return null
+
               return scoreCandidate(
                 {
-                  ...candidate,
-                  source: 'amazon',
-                  source_edition_id: amazon.source_edition_id || `isbn:${isbn}`,
-                  source_url: amazon.source_url,
+                  ...amazon,
+                  title: candidate.title,
+                  subtitle: candidate.subtitle,
+                  authors: candidate.authors,
+                  description: candidate.description,
+                  languages: candidate.languages,
+                  publishers: candidate.publishers,
+                  publish_date: candidate.publish_date,
+                  page_count: candidate.page_count,
+                  isbn10: candidate.isbn10?.length ? candidate.isbn10 : amazon.isbn10,
+                  isbn13: candidate.isbn13?.length ? candidate.isbn13 : amazon.isbn13,
+                  cover_url: candidate.cover_url || amazon.cover_url,
+                  source_attribution: [
+                    ...(candidate.source_attribution || []),
+                    ...(amazon.source_attribution || []),
+                  ],
                   tags: Array.from(new Set(['amazon', ...(candidate.tags || [])])),
-                  retailer_data: [...(candidate.retailer_data || []), { source: 'amazon', url: amazon.source_url, isbn }],
-                  source_attribution: [...(candidate.source_attribution || []), ...(amazon.source_attribution || [])],
                 },
                 queryPlan,
                 options.language
@@ -107,8 +115,11 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
           )
         ).filter((candidate): candidate is BookCandidate => Boolean(candidate))
       : []
-  const rankedCandidates = rankResults([...scoredCandidates, ...amazonEnrichedCandidates], query, options.language)
-  const candidateLogs: CandidateDebugLog[] = rankedCandidates.map((candidate) => ({
+  if (queryPlan.language_guess === 'en') {
+    debugSteps.push(`enrichment:amazon:count=${amazonEnrichedCandidates.length}`)
+  }
+  const allRankedCandidates = rankResults([...rankedCandidates, ...amazonEnrichedCandidates], query, options.language)
+  const candidateLogs: CandidateDebugLog[] = allRankedCandidates.map((candidate) => ({
     source: candidate.source,
     source_ids: {
       work: candidate.source_work_id,
@@ -133,23 +144,15 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
     work_key_candidate: candidate.work_key_candidate,
   }))
 
-  const { groupedResults, clusterLogs } = mergeCandidates(rankedCandidates, queryPlan, options)
-
+  const { groupedResults, clusterLogs } = mergeCandidates(allRankedCandidates, queryPlan, options)
   const rankedGroups = groupedResults
-    .map((group) => {
-      const retailerSupportBonus = group.grouped_work.source_summary.filter((source) => RETAILER_SOURCES.has(source)).length * (queryPlan.language_guess === 'he' ? 16 : 4)
-      const groupScore = computeGroupScore(group, queryPlan) + sourcePriority(group.primary.source, queryPlan.language_guess) + retailerSupportBonus
-      return {
-        ...group,
-        group_score: groupScore,
-      }
-    })
+    .map((group) => ({ ...group, group_score: computeGroupScore(group, queryPlan) }))
     .sort((a, b) => b.group_score - a.group_score)
     .slice(0, Math.min(options.maxResults || 100, 100))
 
   const response: SearchResponse = {
     query: queryPlan,
-    total_raw_candidates: rankedCandidates.length,
+    total_raw_candidates: allRankedCandidates.length,
     total_grouped_works: rankedGroups.length,
     results: rankedGroups,
     debug: options.debug
@@ -158,7 +161,8 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
           providerErrors,
           candidateLogs,
           clusterLogs,
-          ranking: rankedGroups.map((group) => ({ id: group.group_id, score: group.group_score, reasons: [`best:${group.primary.overall_candidate_score.toFixed(1)}`] })),
+          ranking: rankedGroups.map((group) => ({ id: group.group_id, score: group.group_score, reasons: [`score:${group.group_score.toFixed(1)}`] })),
+          pipelineSteps: debugSteps,
         }
       : undefined,
   }

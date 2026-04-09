@@ -1,5 +1,6 @@
 import { googleProvider } from './google'
 import { openLibraryProvider } from './openlibrary'
+import { amazonProvider } from './amazon'
 import { createHtmlMetadataProvider } from './html-provider'
 import type { BookSearchProvider } from './interface'
 
@@ -29,6 +30,7 @@ export const simaniaProvider = createHtmlMetadataProvider({
 
 export function getBookProviders(): Array<{ provider: BookSearchProvider; priority: number }> {
   return [
+    { provider: amazonProvider, priority: 110 },
     { provider: googleProvider, priority: 100 },
     { provider: openLibraryProvider, priority: 90 },
     { provider: steimatzkyProvider, priority: 80 },

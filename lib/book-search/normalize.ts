@@ -3,21 +3,17 @@ const QUOTE_RE = /[“”„‟«»]/g
 const APOSTROPHE_RE = /[’‘‚‛`´]/g
 const DASH_RE = /[‐‑‒–—―]/g
 
-const EN_STOPWORDS = new Set([
-  'the',
-  'a',
-  'an',
-  'of',
-  'and',
-  'to',
-  'in',
-  'for',
-  'on',
-  'with',
-  'at',
-  'by',
-  'from',
-])
+const EN_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'and', 'to', 'in', 'for', 'on', 'with', 'at', 'by', 'from'])
+
+const LANGUAGE_ALIAS: Record<string, 'en' | 'he' | 'unknown'> = {
+  en: 'en',
+  eng: 'en',
+  english: 'en',
+  he: 'he',
+  heb: 'he',
+  hebrew: 'he',
+  עברית: 'he',
+}
 
 function normalizeBase(value: string): string {
   return String(value || '')
@@ -36,6 +32,52 @@ export function stripPunctuation(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase()
+}
+
+export function normalizeTitle(value: string): { normalized: string; withoutSubtitle: string } {
+  const normalized = stripPunctuation(value)
+  const withoutSubtitle = normalized.split(/\s[:\-–—]\s|\s[|]\s/)[0]?.trim() || normalized
+  return { normalized, withoutSubtitle }
+}
+
+export function normalizeAuthorName(value: string): string {
+  return stripPunctuation(value).replace(/\s+/g, ' ').trim()
+}
+
+export function normalizeAuthorArray(values: string[] = []): string[] {
+  return values.map(normalizeAuthorName).filter(Boolean)
+}
+
+export function normalizeIsbn(value?: string | null): string | undefined {
+  const normalized = String(value || '').replace(/[^0-9X]/gi, '').toUpperCase()
+  if (normalized.length === 10 || normalized.length === 13) return normalized
+  return undefined
+}
+
+export function normalizeLanguage(value?: string | null): 'en' | 'he' | 'unknown' {
+  const input = stripPunctuation(String(value || '')).replace(/\s+/g, '')
+  return LANGUAGE_ALIAS[input] || (/[\u0590-\u05FF]/.test(String(value || '')) ? 'he' : 'unknown')
+}
+
+export function normalizePublisher(value?: string | null): string {
+  return stripPunctuation(String(value || '')).replace(/\b(inc|ltd|llc|publishing|publishers|publisher)\b/g, '').replace(/\s+/g, ' ').trim()
+}
+
+export function normalizeDate(value?: string | null): string | undefined {
+  const str = String(value || '').trim()
+  if (!str) return undefined
+  const year = str.match(/\b(1[0-9]{3}|20[0-9]{2}|21[0-9]{2})\b/)?.[1]
+  if (!year) return undefined
+  if (/^\d{4}$/.test(str)) return year
+  const monthDay = str.match(/\d{4}-(\d{2})(?:-(\d{2}))?/)
+  if (!monthDay) return year
+  return `${year}-${monthDay[1]}${monthDay[2] ? `-${monthDay[2]}` : ''}`
+}
+
+export function normalizePageCount(value?: number | string | null): number | undefined {
+  const n = Number(String(value ?? '').replace(/[^0-9]/g, ''))
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return n
 }
 
 export function tokenizeTitle(value: string): string[] {
@@ -77,8 +119,6 @@ export type NormalizedQuery = {
   significant_tokens: string[]
   stopword_light_query: string
   typo_tolerant_query: string
-
-  // backwards compatibility
   raw: string
   tokens: string[]
 }
@@ -91,14 +131,9 @@ export function normalizeQuery(query: string): NormalizedQuery {
   const compact_query = query_without_punctuation.replace(/\s+/g, '')
   const language_guess = detectLanguage(raw_query)
   const isbn_candidates = extractIsbnCandidates(raw_query)
-  const significant_tokens =
-    language_guess === 'en'
-      ? tokenized_query.filter((token) => !EN_STOPWORDS.has(token))
-      : [...tokenized_query]
+  const significant_tokens = language_guess === 'en' ? tokenized_query.filter((token) => !EN_STOPWORDS.has(token)) : [...tokenized_query]
   const stopword_light_query = significant_tokens.join(' ')
-  const typo_tolerant_query = significant_tokens
-    .map((token) => token.replace(/(ing|ed|es|s)$/i, ''))
-    .join(' ')
+  const typo_tolerant_query = significant_tokens.map((token) => token.replace(/(ing|ed|es|s)$/i, '')).join(' ')
 
   return {
     raw_query,
@@ -135,17 +170,12 @@ function transliterationHint(value: string): string | undefined {
 export function buildSearchVariants(query: string): string[] {
   const q = normalizeQuery(query)
   const transliterated = transliterationHint(query)
+  const titleForms = normalizeTitle(query)
   return Array.from(
     new Set(
-      [
-        q.raw_query,
-        `"${q.phrase_query}"`,
-        q.normalized_query,
-        q.query_without_punctuation,
-        q.stopword_light_query,
-        q.typo_tolerant_query,
-        transliterated,
-      ].filter((v): v is string => Boolean(v && v.trim()))
+      [q.raw_query, `"${q.phrase_query}"`, q.normalized_query, q.query_without_punctuation, q.stopword_light_query, q.typo_tolerant_query, titleForms.withoutSubtitle, transliterated].filter(
+        (v): v is string => Boolean(v && v.trim())
+      )
     )
   )
 }
