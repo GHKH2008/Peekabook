@@ -1,6 +1,6 @@
 export type GoogleBook = {
   id: string
-  source?: 'google' | 'openlibrary' | 'gutendex'
+  source?: 'google' | 'openlibrary' | 'gutendex' | 'wikipedia'
   volumeInfo: {
     title: string
     authors?: string[]
@@ -64,6 +64,30 @@ type GutendexResponse = {
   results?: GutendexBook[]
 }
 
+type WikipediaPageThumbnail = {
+  source?: string
+}
+
+type WikipediaPageTerms = {
+  description?: string[]
+}
+
+type WikipediaPage = {
+  pageid?: number
+  title?: string
+  extract?: string
+  thumbnail?: WikipediaPageThumbnail
+  categories?: Array<{ title?: string }>
+  terms?: WikipediaPageTerms
+  lang?: string
+}
+
+type WikipediaQueryResponse = {
+  query?: {
+    pages?: Record<string, WikipediaPage>
+  }
+}
+
 type RankedBook = {
   book: GoogleBook
   score: number
@@ -88,6 +112,20 @@ function normalizeIdentifier(value: string | null | undefined): string {
   return String(value || '').replace(/[^0-9X]/gi, '').toUpperCase()
 }
 
+function normalizeLanguage(value: string | null | undefined): string | undefined {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return undefined
+  if (normalized.startsWith('he')) return 'he'
+  if (normalized.startsWith('en')) return 'en'
+  return normalized
+}
+
+function normalizeImageUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined
+  if (url.startsWith('//')) return `https:${url}`
+  return url.replace('http://', 'https://')
+}
+
 function getPublishedYear(value: string | undefined): string {
   return String(value || '').slice(0, 4)
 }
@@ -101,6 +139,39 @@ function fetchDescriptionSentence(
 ): string | undefined {
   if (typeof firstSentence === 'string') return firstSentence
   return firstSentence?.value
+}
+
+function getBookIsbnCandidates(book: GoogleBook): string[] {
+  return (book.volumeInfo.industryIdentifiers || [])
+    .map((identifier) => normalizeIdentifier(identifier.identifier))
+    .filter(Boolean)
+}
+
+function buildOpenLibraryCoverUrl(
+  doc: Pick<OpenLibrarySearchDoc, 'cover_i' | 'isbn' | 'key'>
+): string | undefined {
+  if (doc.cover_i) {
+    return `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`
+  }
+
+  const isbn13 = doc.isbn?.find((isbn) => normalizeIdentifier(isbn).length === 13)
+  if (isbn13) {
+    return `https://covers.openlibrary.org/b/isbn/${normalizeIdentifier(isbn13)}-L.jpg`
+  }
+
+  const isbn10 = doc.isbn?.find((isbn) => normalizeIdentifier(isbn).length === 10)
+  if (isbn10) {
+    return `https://covers.openlibrary.org/b/isbn/${normalizeIdentifier(isbn10)}-L.jpg`
+  }
+
+  if (doc.key) {
+    const olid = doc.key.split('/').filter(Boolean).pop()
+    if (olid) {
+      return `https://covers.openlibrary.org/b/olid/${olid}-L.jpg`
+    }
+  }
+
+  return undefined
 }
 
 async function fetchWithRetry(
@@ -165,9 +236,7 @@ function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
 
   const isbn10 = doc.isbn?.find((isbn) => normalizeIdentifier(isbn).length === 10)
   const isbn13 = doc.isbn?.find((isbn) => normalizeIdentifier(isbn).length === 13)
-  const coverUrl = doc.cover_i
-    ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`
-    : undefined
+  const coverUrl = normalizeImageUrl(buildOpenLibraryCoverUrl(doc))
 
   return {
     id: `openlibrary:${doc.key || doc.title}`,
@@ -178,10 +247,10 @@ function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
       description: fetchDescriptionSentence(doc.first_sentence),
       categories: doc.subject?.slice(0, 5),
       industryIdentifiers: [
-        ...(isbn10 ? [{ type: 'ISBN_10', identifier: isbn10 }] : []),
-        ...(isbn13 ? [{ type: 'ISBN_13', identifier: isbn13 }] : []),
+        ...(isbn10 ? [{ type: 'ISBN_10', identifier: normalizeIdentifier(isbn10) }] : []),
+        ...(isbn13 ? [{ type: 'ISBN_13', identifier: normalizeIdentifier(isbn13) }] : []),
       ],
-      language: doc.language?.[0],
+      language: normalizeLanguage(doc.language?.[0]),
       imageLinks: coverUrl
         ? {
             thumbnail: coverUrl,
@@ -201,10 +270,9 @@ function mapOpenLibraryDocToBook(doc: OpenLibrarySearchDoc): GoogleBook | null {
 function mapGutendexBook(book: GutendexBook): GoogleBook | null {
   if (!book.title) return null
 
-  const coverUrl =
-    book.formats?.['image/jpeg'] ||
-    book.formats?.['image/png'] ||
-    undefined
+  const coverUrl = normalizeImageUrl(
+    book.formats?.['image/jpeg'] || book.formats?.['image/png'] || undefined
+  )
 
   return {
     id: `gutendex:${book.id}`,
@@ -216,7 +284,7 @@ function mapGutendexBook(book: GutendexBook): GoogleBook | null {
         .filter((name): name is string => Boolean(name)),
       description: book.summaries?.[0],
       categories: [...(book.subjects || [])].slice(0, 5),
-      language: book.languages?.[0],
+      language: normalizeLanguage(book.languages?.[0]),
       imageLinks: coverUrl
         ? {
             thumbnail: coverUrl,
@@ -224,6 +292,95 @@ function mapGutendexBook(book: GutendexBook): GoogleBook | null {
           }
         : undefined,
       maturityRating: 'NOT_MATURE',
+    },
+  }
+}
+
+function mapWikipediaPageToBook(
+  page: WikipediaPage,
+  language: 'he' | 'en'
+): GoogleBook | null {
+  if (!page.title) return null
+
+  const coverUrl = normalizeImageUrl(page.thumbnail?.source)
+
+  return {
+    id: `wikipedia:${language}:${page.pageid || page.title}`,
+    source: 'wikipedia',
+    volumeInfo: {
+      title: page.title,
+      authors: [],
+      description: page.extract || page.terms?.description?.[0],
+      categories: (page.categories || [])
+        .map((category) => category.title?.replace(/^Category:/, ''))
+        .filter((value): value is string => Boolean(value))
+        .slice(0, 5),
+      language,
+      imageLinks: coverUrl
+        ? {
+            thumbnail: coverUrl,
+            smallThumbnail: coverUrl,
+          }
+        : undefined,
+      maturityRating: 'NOT_MATURE',
+    },
+  }
+}
+
+function mergeBooks(primary: GoogleBook, secondary: GoogleBook): GoogleBook {
+  const primaryIdentifiers = primary.volumeInfo.industryIdentifiers || []
+  const secondaryIdentifiers = secondary.volumeInfo.industryIdentifiers || []
+  const dedupedIdentifiers = new Map<string, { type: string; identifier: string }>()
+
+  for (const identifier of [...primaryIdentifiers, ...secondaryIdentifiers]) {
+    const normalized = normalizeIdentifier(identifier.identifier)
+    if (!normalized) continue
+    dedupedIdentifiers.set(`${identifier.type}:${normalized}`, {
+      type: identifier.type,
+      identifier: normalized,
+    })
+  }
+
+  const primaryCover = normalizeImageUrl(primary.volumeInfo.imageLinks?.thumbnail)
+  const secondaryCover = normalizeImageUrl(secondary.volumeInfo.imageLinks?.thumbnail)
+  const mergedCover = primaryCover || secondaryCover
+
+  return {
+    ...primary,
+    volumeInfo: {
+      ...secondary.volumeInfo,
+      ...primary.volumeInfo,
+      title:
+        primary.volumeInfo.title || secondary.volumeInfo.title || 'Unknown title',
+      authors:
+        primary.volumeInfo.authors?.length
+          ? primary.volumeInfo.authors
+          : secondary.volumeInfo.authors,
+      description:
+        primary.volumeInfo.description || secondary.volumeInfo.description,
+      categories:
+        primary.volumeInfo.categories?.length
+          ? primary.volumeInfo.categories
+          : secondary.volumeInfo.categories,
+      industryIdentifiers: Array.from(dedupedIdentifiers.values()),
+      language:
+        normalizeLanguage(primary.volumeInfo.language) ||
+        normalizeLanguage(secondary.volumeInfo.language),
+      imageLinks: mergedCover
+        ? {
+            thumbnail: mergedCover,
+            smallThumbnail:
+              normalizeImageUrl(primary.volumeInfo.imageLinks?.smallThumbnail) ||
+              normalizeImageUrl(secondary.volumeInfo.imageLinks?.smallThumbnail) ||
+              mergedCover,
+          }
+        : undefined,
+      publisher: primary.volumeInfo.publisher || secondary.volumeInfo.publisher,
+      publishedDate:
+        primary.volumeInfo.publishedDate || secondary.volumeInfo.publishedDate,
+      pageCount: primary.volumeInfo.pageCount || secondary.volumeInfo.pageCount,
+      maturityRating:
+        primary.volumeInfo.maturityRating || secondary.volumeInfo.maturityRating,
     },
   }
 }
@@ -261,6 +418,16 @@ async function searchGoogleSource(
       return (data.items || []).map((item) => ({
         ...item,
         source: 'google' as const,
+        volumeInfo: {
+          ...item.volumeInfo,
+          language: normalizeLanguage(item.volumeInfo.language),
+          imageLinks: item.volumeInfo.imageLinks
+            ? {
+                thumbnail: normalizeImageUrl(item.volumeInfo.imageLinks.thumbnail),
+                smallThumbnail: normalizeImageUrl(item.volumeInfo.imageLinks.smallThumbnail),
+              }
+            : undefined,
+        },
       }))
     })
   )
@@ -371,6 +538,57 @@ async function searchGutendexBooks(
     .filter((book): book is GoogleBook => Boolean(book))
 }
 
+async function searchWikipediaBooks(
+  query: string,
+  langRestrict?: string
+): Promise<GoogleBook[]> {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  const queryHasHebrew = HEBREW_RE.test(trimmed)
+  const languages: Array<'he' | 'en'> =
+    langRestrict === 'he'
+      ? ['he', 'en']
+      : langRestrict === 'en'
+        ? ['en', 'he']
+        : queryHasHebrew
+          ? ['he', 'en']
+          : ['en', 'he']
+
+  const settled = await Promise.allSettled(
+    languages.map(async (language) => {
+      const params = new URLSearchParams({
+        action: 'query',
+        format: 'json',
+        origin: '*',
+        generator: 'search',
+        gsrsearch: `${trimmed} intitle:${trimmed}`,
+        gsrlimit: '6',
+        prop: 'extracts|pageimages|categories|pageterms',
+        exintro: '1',
+        explaintext: '1',
+        exsentences: '2',
+        piprop: 'thumbnail',
+        pithumbsize: '300',
+        pilimit: '6',
+        cllimit: '5',
+        wbptterms: 'description',
+      })
+
+      const response = await fetchWithRetry(
+        `https://${language}.wikipedia.org/w/api.php?${params.toString()}`
+      )
+      const data: WikipediaQueryResponse = await response.json()
+      const pages = Object.values(data.query?.pages || {})
+      return pages
+        .map((page) => mapWikipediaPageToBook(page, language))
+        .filter((book): book is GoogleBook => Boolean(book))
+    })
+  )
+
+  return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+}
+
 function makeBookDedupeKey(book: GoogleBook): string {
   const identifiers = book.volumeInfo.industryIdentifiers || []
   const isbn13 = identifiers.find((item) => item.type === 'ISBN_13')?.identifier
@@ -432,7 +650,7 @@ function scoreBook(
   }
 
   if (langRestrict) {
-    if (book.volumeInfo.language === langRestrict) {
+    if (normalizeLanguage(book.volumeInfo.language) === langRestrict) {
       score += 50
     }
 
@@ -457,11 +675,18 @@ function scoreBook(
     if (HEBREW_RE.test(book.volumeInfo.title)) score += 35
     if (book.source === 'openlibrary') score += 12
     if (book.source === 'gutendex') score -= 12
+    if (book.source === 'wikipedia' && normalizeLanguage(book.volumeInfo.language) === 'he') {
+      score += 8
+    }
   } else if (book.source === 'google') {
     score += 6
   }
 
-  if (book.volumeInfo.imageLinks?.thumbnail) score += 5
+  if (book.source === 'wikipedia') {
+    score -= 25
+  }
+
+  if (book.volumeInfo.imageLinks?.thumbnail) score += 10
   if ((book.volumeInfo.industryIdentifiers || []).length > 0) score += 4
   if (book.volumeInfo.description) score += 2
 
@@ -483,12 +708,37 @@ function rankAndDedupeBooks(
   const deduped = new Map<string, GoogleBook>()
   for (const entry of ranked) {
     const key = makeBookDedupeKey(entry.book)
-    if (!deduped.has(key)) {
-      deduped.set(key, entry.book)
-    }
+    const existing = deduped.get(key)
+    deduped.set(key, existing ? mergeBooks(existing, entry.book) : entry.book)
   }
 
   return Array.from(deduped.values()).slice(0, 20)
+}
+
+function fillMissingCoversFromMatches(books: GoogleBook[]): GoogleBook[] {
+  const booksWithCovers = books.filter((book) =>
+    Boolean(normalizeImageUrl(book.volumeInfo.imageLinks?.thumbnail))
+  )
+
+  return books.map((book) => {
+    const currentCover = normalizeImageUrl(book.volumeInfo.imageLinks?.thumbnail)
+    if (currentCover) return book
+
+    const bookKey = makeBookDedupeKey(book)
+    const isbnCandidates = new Set(getBookIsbnCandidates(book))
+
+    const match = booksWithCovers.find((candidate) => {
+      if (candidate.id === book.id) return false
+      if (makeBookDedupeKey(candidate) === bookKey) return true
+
+      const candidateIsbns = getBookIsbnCandidates(candidate)
+      return candidateIsbns.some((isbn) => isbnCandidates.has(isbn))
+    })
+
+    if (!match) return book
+
+    return mergeBooks(book, match)
+  })
 }
 
 export async function searchGoogleBooks(
@@ -504,12 +754,17 @@ export async function searchGoogleBooks(
     searchGutendexBooks(normalizedQuery, langRestrict),
   ])
 
-  const books = settled.flatMap((result) =>
+  let books = settled.flatMap((result) =>
     result.status === 'fulfilled' ? result.value : []
   )
 
+  if (books.length === 0) {
+    const wikipediaBooks = await searchWikipediaBooks(normalizedQuery, langRestrict)
+    books = wikipediaBooks
+  }
+
   if (books.length > 0) {
-    return rankAndDedupeBooks(books, normalizedQuery, langRestrict)
+    return rankAndDedupeBooks(fillMissingCoversFromMatches(books), normalizedQuery, langRestrict)
   }
 
   if (settled.every((result) => result.status === 'rejected')) {
@@ -532,10 +787,10 @@ export function parseGoogleBook(book: GoogleBook) {
     genres: info.categories || null,
     isbn: identifiers.find((i) => i.type === 'ISBN_10')?.identifier || null,
     isbn_13: identifiers.find((i) => i.type === 'ISBN_13')?.identifier || null,
-    language: info.language || null,
+    language: normalizeLanguage(info.language) || null,
     cover_url:
-      info.imageLinks?.thumbnail?.replace('http://', 'https://') ||
-      info.imageLinks?.smallThumbnail?.replace('http://', 'https://') ||
+      normalizeImageUrl(info.imageLinks?.thumbnail) ||
+      normalizeImageUrl(info.imageLinks?.smallThumbnail) ||
       null,
     publisher: info.publisher || null,
     published_date: info.publishedDate || null,
