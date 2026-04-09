@@ -102,34 +102,57 @@ export async function searchGoogleBooks(
   query: string,
   langRestrict?: string
 ): Promise<GoogleBook[]> {
-  if (!query.trim()) return []
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) return []
 
-  const params = new URLSearchParams({
-    q: query,
-    maxResults: '12',
-  })
-
-  if (langRestrict) {
-    params.set('langRestrict', langRestrict)
-  }
+  const isLikelyIsbn = /^[\dX-]{10,17}$/i.test(normalizedQuery)
+  const searchQueries = [
+    normalizedQuery,
+    ...(!isLikelyIsbn ? [`intitle:${normalizedQuery}`, `inauthor:${normalizedQuery}`] : []),
+    ...(isLikelyIsbn ? [`isbn:${normalizedQuery.replace(/-/g, '')}`] : []),
+  ]
 
   try {
-    const response = await fetchWithRetry(
-      `https://www.googleapis.com/books/v1/volumes?${params.toString()}`
+    const batches = await Promise.all(
+      searchQueries.map(async (searchTerm) => {
+        const params = new URLSearchParams({
+          q: searchTerm,
+          maxResults: '12',
+        })
+
+        if (langRestrict) {
+          params.set('langRestrict', langRestrict)
+        }
+
+        const response = await fetchWithRetry(
+          `https://www.googleapis.com/books/v1/volumes?${params.toString()}`
+        )
+
+        const data: GoogleBooksResponse = await response.json()
+        return data.items || []
+      })
     )
 
-    const data: GoogleBooksResponse = await response.json()
-    const googleResults = data.items || []
+    const deduped = new Map<string, GoogleBook>()
+    for (const books of batches) {
+      for (const book of books) {
+        if (!deduped.has(book.id)) {
+          deduped.set(book.id, book)
+        }
+      }
+    }
+
+    const googleResults = Array.from(deduped.values()).slice(0, 12)
 
     if (googleResults.length > 0) {
       return googleResults
     }
 
-    return searchOpenLibraryBooks(query, langRestrict)
+    return searchOpenLibraryBooks(normalizedQuery, langRestrict)
   } catch (error) {
     console.error('Google Books search error:', error)
 
-    const fallbackResults = await searchOpenLibraryBooks(query, langRestrict)
+    const fallbackResults = await searchOpenLibraryBooks(normalizedQuery, langRestrict)
     if (fallbackResults.length > 0) {
       return fallbackResults
     }

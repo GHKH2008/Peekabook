@@ -15,7 +15,7 @@ import {
 import { Spinner } from '@/components/ui/spinner'
 import { Search, BookOpen, Check } from 'lucide-react'
 import Image from 'next/image'
-import { searchBooks, addBookToLibrary } from '@/app/actions/books'
+import { searchBooks, addBookToLibrary, addCustomBookToLibrary } from '@/app/actions/books'
 import type { GoogleBook } from '@/lib/google-books'
 
 export default function AddBookPage() {
@@ -26,6 +26,12 @@ export default function AddBookPage() {
   const [addingBookId, setAddingBookId] = useState<string | null>(null)
   const [addedBooks, setAddedBooks] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
+  const [customPending, setCustomPending] = useState(false)
+  const [customTitle, setCustomTitle] = useState('')
+  const [customAuthor, setCustomAuthor] = useState('')
+  const [customSummary, setCustomSummary] = useState('')
+  const [customPublisher, setCustomPublisher] = useState('')
+  const [customPublishedDate, setCustomPublishedDate] = useState('')
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
@@ -46,6 +52,35 @@ export default function AddBookPage() {
         : 'Failed to search books. Please try again.')
     } finally {
       setIsSearching(false)
+    }
+  }
+
+  async function handleAddCustomBook(e: React.FormEvent) {
+    e.preventDefault()
+    setCustomPending(true)
+    setError(null)
+    try {
+      const result = await addCustomBookToLibrary({
+        title: customTitle,
+        author: customAuthor,
+        summary: customSummary,
+        publisher: customPublisher,
+        publishedDate: customPublishedDate,
+      })
+
+      if (result.success) {
+        setCustomTitle('')
+        setCustomAuthor('')
+        setCustomSummary('')
+        setCustomPublisher('')
+        setCustomPublishedDate('')
+      } else {
+        setError(result.error || 'Failed to add book')
+      }
+    } catch {
+      setError('Failed to add custom book. Please try again.')
+    } finally {
+      setCustomPending(false)
     }
   }
 
@@ -115,6 +150,70 @@ export default function AddBookPage() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Add Manually</CardTitle>
+          <CardDescription>
+            Can&apos;t find your book? Add it manually with title, author, summary and more.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleAddCustomBook} className="space-y-4">
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="custom-title">Title *</FieldLabel>
+                <Input
+                  id="custom-title"
+                  value={customTitle}
+                  onChange={(e) => setCustomTitle(e.target.value)}
+                  placeholder="Book title"
+                  required
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="custom-author">Author</FieldLabel>
+                <Input
+                  id="custom-author"
+                  value={customAuthor}
+                  onChange={(e) => setCustomAuthor(e.target.value)}
+                  placeholder="Author name"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="custom-summary">Summary</FieldLabel>
+                <Input
+                  id="custom-summary"
+                  value={customSummary}
+                  onChange={(e) => setCustomSummary(e.target.value)}
+                  placeholder="Brief summary"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="custom-publisher">Publisher</FieldLabel>
+                <Input
+                  id="custom-publisher"
+                  value={customPublisher}
+                  onChange={(e) => setCustomPublisher(e.target.value)}
+                  placeholder="Publisher"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="custom-published-date">Published Date</FieldLabel>
+                <Input
+                  id="custom-published-date"
+                  value={customPublishedDate}
+                  onChange={(e) => setCustomPublishedDate(e.target.value)}
+                  placeholder="e.g. 2023 or 2023-06-01"
+                />
+              </Field>
+            </FieldGroup>
+            <Button type="submit" disabled={customPending || !customTitle.trim()}>
+              {customPending ? 'Adding...' : 'Add Manually'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
       {error && (
         <Card className="border-destructive">
           <CardContent className="py-4">
@@ -163,6 +262,11 @@ export default function AddBookPage() {
                       {book.volumeInfo.authors && (
                         <p className="text-sm text-muted-foreground mt-1">
                           {book.volumeInfo.authors.join(', ')}
+                        </p>
+                      )}
+                      {book.volumeInfo.publisher && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Publisher: {book.volumeInfo.publisher}
                         </p>
                       )}
                       {book.volumeInfo.publishedDate && (

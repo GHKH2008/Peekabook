@@ -10,8 +10,8 @@ export type AuthResult = {
 }
 
 export async function signup(formData: FormData): Promise<AuthResult> {
-  const username = formData.get('username') as string
-  const email = formData.get('email') as string
+  const username = (formData.get('username') as string)?.trim()
+  const email = (formData.get('email') as string)?.trim().toLowerCase()
   const password = formData.get('password') as string
   const confirmPassword = formData.get('confirmPassword') as string
 
@@ -36,7 +36,9 @@ export async function signup(formData: FormData): Promise<AuthResult> {
   }
 
   const existingUser = await sql`
-    SELECT id FROM users WHERE username = ${username} OR email = ${email}
+    SELECT id FROM users
+    WHERE username = ${username}
+      OR lower(email) = ${email}
   `
 
   if (existingUser.length > 0) {
@@ -45,18 +47,23 @@ export async function signup(formData: FormData): Promise<AuthResult> {
 
   const passwordHash = await hashPassword(password)
 
-  const newUser = await sql`
-    INSERT INTO users (username, email, password_hash, display_name)
-    VALUES (${username}, ${email}, ${passwordHash}, ${username})
-    RETURNING id
-  `
+  let newUser
+  try {
+    newUser = await sql`
+      INSERT INTO users (username, email, password_hash, display_name)
+      VALUES (${username}, ${email}, ${passwordHash}, ${username})
+      RETURNING id
+    `
+  } catch {
+    return { success: false, error: 'Username or email already exists' }
+  }
 
   await createSession(newUser[0].id)
   redirect('/dashboard')
 }
 
 export async function login(formData: FormData): Promise<AuthResult> {
-  const identifier = formData.get('identifier') as string
+  const identifier = (formData.get('identifier') as string)?.trim()
   const password = formData.get('password') as string
 
   if (!identifier || !password) {
@@ -64,7 +71,10 @@ export async function login(formData: FormData): Promise<AuthResult> {
   }
 
   const users = await sql`
-    SELECT * FROM users WHERE username = ${identifier} OR email = ${identifier}
+    SELECT *
+    FROM users
+    WHERE username = ${identifier}
+      OR lower(email) = ${identifier.toLowerCase()}
   `
 
   if (users.length === 0) {
