@@ -145,6 +145,14 @@ function fetchDescriptionSentence(
   return firstSentence?.value
 }
 
+function hasHebrewText(value: string | null | undefined): boolean {
+  return HEBREW_RE.test(String(value || ''))
+}
+
+function getPrimaryBookText(book: GoogleBook): string {
+  return `${book.volumeInfo.title || ''} ${(book.volumeInfo.authors || []).join(' ')}`
+}
+
 function getBookIsbnCandidates(book: GoogleBook): string[] {
   return (book.volumeInfo.industryIdentifiers || [])
     .map((identifier) => normalizeIdentifier(identifier.identifier))
@@ -331,6 +339,73 @@ function mapWikipediaPageToBook(
   }
 }
 
+function booksShareIsbn(primary: GoogleBook, secondary: GoogleBook): boolean {
+  const primaryIsbns = new Set(getBookIsbnCandidates(primary))
+  if (primaryIsbns.size === 0) return false
+
+  return getBookIsbnCandidates(secondary).some((isbn) => primaryIsbns.has(isbn))
+}
+
+function titlesLookCompatible(primary: GoogleBook, secondary: GoogleBook): boolean {
+  const primaryTitle = normalizeText(primary.volumeInfo.title)
+  const secondaryTitle = normalizeText(secondary.volumeInfo.title)
+
+  if (!primaryTitle || !secondaryTitle) return false
+  if (primaryTitle === secondaryTitle) return true
+  if (primaryTitle.includes(secondaryTitle) || secondaryTitle.includes(primaryTitle)) {
+    return true
+  }
+
+  return false
+}
+
+function authorsLookCompatible(primary: GoogleBook, secondary: GoogleBook): boolean {
+  const primaryAuthor = normalizeText(primary.volumeInfo.authors?.[0])
+  const secondaryAuthor = normalizeText(secondary.volumeInfo.authors?.[0])
+
+  if (!primaryAuthor || !secondaryAuthor) return true
+  if (primaryAuthor === secondaryAuthor) return true
+  if (primaryAuthor.includes(secondaryAuthor) || secondaryAuthor.includes(primaryAuthor)) {
+    return true
+  }
+
+  return false
+}
+
+function shouldUseCoverFromCandidate(primary: GoogleBook, candidate: GoogleBook): boolean {
+  const candidateCover = normalizeImageUrl(candidate.volumeInfo.imageLinks?.thumbnail)
+  if (!candidateCover) return false
+
+  const primaryText = getPrimaryBookText(primary)
+  const candidateText = getPrimaryBookText(candidate)
+
+  const primaryHasHebrew = hasHebrewText(primaryText)
+  const candidateHasHebrew = hasHebrewText(candidateText)
+
+  const primaryLang = normalizeLanguage(primary.volumeInfo.language)
+  const candidateLang = normalizeLanguage(candidate.volumeInfo.language)
+
+  const sameTitle = titlesLookCompatible(primary, candidate)
+  const sameAuthor = authorsLookCompatible(primary, candidate)
+  const sharedIsbn = booksShareIsbn(primary, candidate)
+
+  if (primaryHasHebrew !== candidateHasHebrew) {
+    if (!sharedIsbn) return false
+    if (primaryLang && candidateLang && primaryLang !== candidateLang) return false
+    return false
+  }
+
+  if (primaryLang && candidateLang && primaryLang !== candidateLang) {
+    if (!sharedIsbn) return false
+    return false
+  }
+
+  if (sharedIsbn) return true
+  if (sameTitle && sameAuthor) return true
+
+  return false
+}
+
 function mergeBooks(primary: GoogleBook, secondary: GoogleBook): GoogleBook {
   const primaryIdentifiers = primary.volumeInfo.industryIdentifiers || []
   const secondaryIdentifiers = secondary.volumeInfo.industryIdentifiers || []
@@ -347,7 +422,8 @@ function mergeBooks(primary: GoogleBook, secondary: GoogleBook): GoogleBook {
 
   const primaryCover = normalizeImageUrl(primary.volumeInfo.imageLinks?.thumbnail)
   const secondaryCover = normalizeImageUrl(secondary.volumeInfo.imageLinks?.thumbnail)
-  const mergedCover = primaryCover || secondaryCover
+  const mergedCover =
+    primaryCover || (shouldUseCoverFromCandidate(primary, secondary) ? secondaryCover : undefined)
 
   return {
     ...primary,
@@ -375,7 +451,9 @@ function mergeBooks(primary: GoogleBook, secondary: GoogleBook): GoogleBook {
             thumbnail: mergedCover,
             smallThumbnail:
               normalizeImageUrl(primary.volumeInfo.imageLinks?.smallThumbnail) ||
-              normalizeImageUrl(secondary.volumeInfo.imageLinks?.smallThumbnail) ||
+              (shouldUseCoverFromCandidate(primary, secondary)
+                ? normalizeImageUrl(secondary.volumeInfo.imageLinks?.smallThumbnail)
+                : undefined) ||
               mergedCover,
           }
         : undefined,
@@ -759,6 +837,7 @@ function fillMissingCoversFromMatches(books: GoogleBook[]): GoogleBook[] {
 
     const match = booksWithCovers.find((candidate) => {
       if (candidate.id === book.id) return false
+      if (!shouldUseCoverFromCandidate(book, candidate)) return false
       if (makeBookDedupeKey(candidate) === bookKey) return true
 
       const candidateIsbns = getBookIsbnCandidates(candidate)
@@ -769,6 +848,71 @@ function fillMissingCoversFromMatches(books: GoogleBook[]): GoogleBook[] {
 
     return mergeBooks(book, match)
   })
+}
+
+function areLikelySameBook(primary: GoogleBook, candidate: GoogleBook): boolean {
+  if (booksShareIsbn(primary, candidate)) return true
+
+  const primaryHasHebrew = hasHebrewText(getPrimaryBookText(primary))
+  const candidateHasHebrew = hasHebrewText(getPrimaryBookText(candidate))
+
+  if (primaryHasHebrew !== candidateHasHebrew) return false
+  if (!titlesLookCompatible(primary, candidate)) return false
+  if (!authorsLookCompatible(primary, candidate)) return false
+
+  return true
+}
+
+function getPreferredLanguageHint(book: GoogleBook): string | undefined {
+  const explicit = normalizeLanguage(book.volumeInfo.language)
+  if (explicit) return explicit
+  return hasHebrewText(getPrimaryBookText(book)) ? 'he' : undefined
+}
+
+export async function enrichGoogleBook(book: GoogleBook): Promise<GoogleBook> {
+  const queries = Array.from(
+    new Set(
+      [
+        book.volumeInfo.industryIdentifiers?.find((i) => i.type === 'ISBN_13')?.identifier,
+        book.volumeInfo.industryIdentifiers?.find((i) => i.type === 'ISBN_10')?.identifier,
+        `${book.volumeInfo.title} ${book.volumeInfo.authors?.[0] || ''}`.trim(),
+        book.volumeInfo.title,
+      ]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    )
+  )
+
+  if (queries.length === 0) return book
+
+  const langHint = getPreferredLanguageHint(book)
+  const aggregated = new Map<string, GoogleBook>()
+
+  for (const query of queries.slice(0, 4)) {
+    try {
+      const results = await searchGoogleBooks(query, langHint)
+      for (const result of results) {
+        aggregated.set(result.id, result)
+      }
+    } catch {
+      // Ignore individual enrichment failures
+    }
+  }
+
+  const compatible = Array.from(aggregated.values())
+    .filter((candidate) => candidate.id !== book.id)
+    .filter((candidate) => areLikelySameBook(book, candidate))
+    .sort((a, b) => {
+      const query = `${book.volumeInfo.title} ${(book.volumeInfo.authors || []).join(' ')}`
+      return scoreBook(b, query, langHint) - scoreBook(a, query, langHint)
+    })
+
+  let enriched = book
+  for (const candidate of compatible) {
+    enriched = mergeBooks(enriched, candidate)
+  }
+
+  return enriched
 }
 
 export async function searchGoogleBooks(
