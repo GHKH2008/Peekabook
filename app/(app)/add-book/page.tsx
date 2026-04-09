@@ -5,8 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Field, FieldLabel, FieldGroup } from '@/components/ui/field'
-import { Plus, X } from 'lucide-react'
-import { addCustomBookToLibrary } from '@/app/actions/books'
+import { Plus, Search, X } from 'lucide-react'
+import { addCustomBookToLibrary, addSearchedBookToLibrary, searchBooks } from '@/app/actions/books'
+import type { EnglishBook } from '@/lib/book-search/types'
 
 export default function AddBookPage() {
   const [error, setError] = useState<string | null>(null)
@@ -17,6 +18,58 @@ export default function AddBookPage() {
   const [customPublisher, setCustomPublisher] = useState('')
   const [customPublishedDate, setCustomPublishedDate] = useState('')
   const [showManualForm, setShowManualForm] = useState(true)
+
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchPending, setSearchPending] = useState(false)
+  const [searchResults, setSearchResults] = useState<EnglishBook[]>([])
+  const [addingBookKey, setAddingBookKey] = useState<string | null>(null)
+
+  async function handleSearch(e: React.FormEvent) {
+    e.preventDefault()
+    setSearchPending(true)
+    setError(null)
+
+    try {
+      const results = await searchBooks(searchQuery)
+      setSearchResults(results)
+    } catch {
+      setError('Book search failed. Please try again.')
+    } finally {
+      setSearchPending(false)
+    }
+  }
+
+  async function handleAddSearchedBook(book: EnglishBook) {
+    setAddingBookKey(book.sourceEditionId ?? book.title)
+    setError(null)
+
+    try {
+      const result = await addSearchedBookToLibrary({
+        title: book.title,
+        series: book.series,
+        authors: book.authors,
+        summary: book.summary,
+        genres: book.genres,
+        isbn: book.isbn,
+        isbn13: book.isbn13,
+        language: book.language,
+        cover: book.cover,
+        publisher: book.publisher,
+        publishedDate: book.publishedDate,
+        pageCount: book.pageCount,
+        sourceRefs: book.sourceRefs,
+        sourceTrace: book.sourceTrace,
+      })
+
+      if (!result.success) {
+        setError(result.error || 'Failed to add searched book')
+      }
+    } catch {
+      setError('Failed to add searched book. Please try again.')
+    } finally {
+      setAddingBookKey(null)
+    }
+  }
 
   async function handleAddCustomBook(e: React.FormEvent) {
     e.preventDefault()
@@ -49,11 +102,63 @@ export default function AddBookPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-2xl mx-auto">
+    <div className="space-y-6 max-w-3xl mx-auto">
       <div>
         <h1 className="text-2xl md:text-3xl font-bold text-foreground">Add a Book</h1>
-        <p className="text-muted-foreground">Book search has been removed. Add entries manually for now.</p>
+        <p className="text-muted-foreground">English search uses Amazon first, then Google and Open Library only for missing fields.</p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Search (English)</CardTitle>
+          <CardDescription>
+            Sequential pipeline: Amazon candidates first, enrichment second, hard dedupe and edition collapsing.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <form onSubmit={handleSearch} className="flex gap-2">
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by title (English)"
+            />
+            <Button type="submit" disabled={!searchQuery.trim() || searchPending} className="gap-2">
+              <Search className="h-4 w-4" />
+              {searchPending ? 'Searching...' : 'Search'}
+            </Button>
+          </form>
+
+          <div className="space-y-3">
+            {searchResults.map((book) => {
+              const key = book.sourceEditionId ?? `${book.title}-${book.authors[0] ?? ''}`
+
+              return (
+                <div key={key} className="rounded-lg border p-3 space-y-2">
+                  <p className="font-semibold">{book.title}</p>
+                  {book.series && <p className="text-sm text-muted-foreground">Series: {book.series}</p>}
+                  {!!book.authors.length && (
+                    <p className="text-sm text-muted-foreground">By {book.authors.join(', ')}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    {book.publisher || 'Unknown publisher'} • {book.publishedDate || 'Unknown date'}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={addingBookKey === key}
+                    onClick={() => handleAddSearchedBook(book)}
+                  >
+                    {addingBookKey === key ? 'Adding...' : 'Add to Library'}
+                  </Button>
+                </div>
+              )
+            })}
+            {!searchPending && searchResults.length === 0 && (
+              <p className="text-sm text-muted-foreground">No English search results yet. Try an English title.</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="space-y-4">
