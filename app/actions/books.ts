@@ -2,7 +2,7 @@
 
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { searchGoogleBooks, parseGoogleBook, enrichGoogleBook, type GoogleBook } from '@/lib/google-books'
+import { searchGoogleBooks, parseGoogleBook, type GoogleBook } from '@/lib/google-books'
 import { revalidatePath } from 'next/cache'
 
 export async function searchBooks(query: string, langRestrict?: string): Promise<GoogleBook[]> {
@@ -79,16 +79,7 @@ async function findDuplicateBookId(
 export async function addBookToLibrary(googleBook: GoogleBook): Promise<BookActionResult> {
   const user = await requireAuth()
 
-  let enrichedBook = googleBook
-
-  try {
-    enrichedBook = await enrichGoogleBook(googleBook)
-  } catch (error) {
-    console.error('Book enrichment failed, continuing with original data', error)
-    enrichedBook = googleBook
-  }
-
-  const bookData = parseGoogleBook(enrichedBook)
+  const bookData = parseGoogleBook(googleBook)
   bookData.isbn = normalizeIdentifier(bookData.isbn)
   bookData.isbn_13 = normalizeIdentifier(bookData.isbn_13)
 
