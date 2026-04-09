@@ -1,6 +1,6 @@
 import { normalizeBookIdentifier, normalizeBookLanguage, normalizeBookText, normalizeHebrewForComparison } from '@/lib/book-merge'
 import { searchBooksOrchestrated } from '@/lib/book-search/orchestrator'
-import type { NormalizedBookResult } from '@/lib/book-search/types'
+import type { GroupedBookResult, NormalizedBookResult } from '@/lib/book-search/types'
 
 export type BookSourceName =
   | 'google'
@@ -18,6 +18,7 @@ export type BookSourceName =
 
 export type GoogleBook = {
   id: string
+  groupId?: string
   source?: BookSourceName
   sourceTrace?: BookSourceName[]
   sourceDetails?: {
@@ -55,6 +56,8 @@ export type GoogleBook = {
     pageCount?: number
     maturityRating?: string
   }
+  editions?: GoogleBook[]
+  editionCount?: number
 }
 
 export type GoogleBooksResponse = {
@@ -1381,14 +1384,14 @@ export async function searchGoogleBooks(query: string, langRestrict?: string): P
     language: langRestrict,
     timeoutMs: Number(process.env.BOOK_PROVIDER_TIMEOUT_MS || 4500),
     debug: debugEnabled,
-    maxResults: 20,
+    maxResults: 8,
   })
 
   if (debugEnabled && response.debug) {
     console.info('[books-search] provider debug', response.debug)
   }
 
-  return response.results.map(mapNormalizedResultToGoogleBook)
+  return response.results.map(mapGroupedResultToGoogleBook)
 }
 
 function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBook {
@@ -1428,6 +1431,20 @@ function mapNormalizedResultToGoogleBook(result: NormalizedBookResult): GoogleBo
       pageCount: result.page_count,
       maturityRating: 'NOT_MATURE',
     },
+  }
+}
+
+function mapGroupedResultToGoogleBook(group: GroupedBookResult): GoogleBook {
+  const primary = mapNormalizedResultToGoogleBook(group.primary)
+  const editionVariants = group.editions
+    .filter((edition) => `${edition.source}:${edition.source_id}` !== `${group.primary.source}:${group.primary.source_id}`)
+    .map(mapNormalizedResultToGoogleBook)
+
+  return {
+    ...primary,
+    groupId: group.group_id,
+    editions: editionVariants,
+    editionCount: group.total_editions,
   }
 }
 

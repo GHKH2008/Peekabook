@@ -3,7 +3,7 @@ import { buildSearchVariants } from './normalize'
 import { getBookProviders } from './providers'
 import { mergeCandidates } from './merge'
 import { rankResults } from './ranker'
-import type { SearchOrchestratorOptions, SearchResponse } from './types'
+import type { NormalizedBookResult, SearchOrchestratorOptions, SearchResponse } from './types'
 
 const CACHE_TTL_MS = 1000 * 60 * 5
 
@@ -27,7 +27,7 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
   const providerErrors: Array<{ provider: any; message: string }> = []
 
   const providers = getBookProviders().sort((a, b) => b.order - a.order)
-  const aggregated: SearchResponse['results'] = []
+  const aggregated: NormalizedBookResult[] = []
 
   for (const { provider } of providers) {
     if (!provider.enabled()) continue
@@ -46,17 +46,37 @@ export async function searchBooksOrchestrated(query: string, options: SearchOrch
     providerTimings[provider.name] = Date.now() - start
   }
 
-  const { mergedResults, decisions } = mergeCandidates(aggregated)
-  const ranked = rankResults(mergedResults, query).slice(0, options.maxResults || 20)
+  const { groupedResults, decisions } = mergeCandidates(aggregated, options)
+  const rankedPrimary = rankResults(
+    groupedResults.map((group) => group.primary),
+    query
+  )
+
+  const rankingMap = new Map(rankedPrimary.map((entry, index) => [`${entry.source}:${entry.source_id}`, { ...entry, index }]))
+  const rankedGroups = groupedResults
+    .map((group) => {
+      const key = `${group.primary.source}:${group.primary.source_id}`
+      const rankMeta = rankingMap.get(key)
+      const baseScore = rankMeta?._score || 0
+      const groupBonus = Math.min(group.total_editions - 1, 5) * 8
+      const sourceBonus = Math.min(new Set((group.primary.source_attribution || []).map((item) => item.source)).size, 3) * 4
+      return {
+        ...group,
+        _score: baseScore + groupBonus + sourceBonus,
+        _reasons: [...(rankMeta?._reasons || []), 'groupedEditionsBoost'],
+      }
+    })
+    .sort((a, b) => b._score - a._score)
+    .slice(0, options.maxResults || 8)
 
   const response: SearchResponse = {
-    results: ranked.map(({ _score, _reasons, ...book }) => book),
+    results: rankedGroups.map(({ _score, _reasons, ...group }) => group),
     debug: options.debug
       ? {
           providerTimings,
           providerErrors,
           mergeDecisions: decisions,
-          ranking: ranked.map((entry) => ({ id: entry.source_id, score: entry._score, reasons: entry._reasons })),
+          ranking: rankedGroups.map((entry) => ({ id: entry.group_id, score: entry._score, reasons: entry._reasons })),
         }
       : undefined,
   }

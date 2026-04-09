@@ -35,6 +35,7 @@ export default function AddBookPage() {
   const [customPublisher, setCustomPublisher] = useState('')
   const [customPublishedDate, setCustomPublishedDate] = useState('')
   const [showManualForm, setShowManualForm] = useState(false)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
@@ -112,6 +113,15 @@ export default function AddBookPage() {
     } finally {
       setAddingBookId(null)
     }
+  }
+
+  function toggleGroup(groupKey: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupKey)) next.delete(groupKey)
+      else next.add(groupKey)
+      return next
+    })
   }
 
   return (
@@ -254,7 +264,7 @@ export default function AddBookPage() {
           <CardHeader>
             <CardTitle>Search Results</CardTitle>
             <CardDescription>
-              Found {results.length} books. Click to add to your library.
+              Showing {results.length} grouped books. Add the primary edition or choose a variant.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -263,84 +273,111 @@ export default function AddBookPage() {
                 const isAdded = addedBooks.has(book.id)
                 const isAdding = addingBookId === book.id
                 const display = buildMergedDisplayModel(book)
+                const groupKey = book.groupId || book.id
+                const editions = book.editions || []
+                const isExpanded = expandedGroups.has(groupKey)
+                const primaryYear = book.volumeInfo.publishedDate?.match(/\d{4}/)?.[0]
                 return (
                   <div
-                    key={book.id}
-                    className="flex gap-4 p-4 border border-border rounded-lg hover:bg-muted/50 transition-colors"
+                    key={groupKey}
+                    className="p-4 border border-border rounded-lg hover:bg-muted/50 transition-colors"
                   >
-                    <div className="w-20 h-28 flex-shrink-0 bg-muted rounded overflow-hidden">
-                      {book.volumeInfo.imageLinks?.thumbnail ? (
-                        <Image
-                          src={book.volumeInfo.imageLinks.thumbnail.replace('http://', 'https://')}
-                          alt={book.volumeInfo.title}
-                          width={80}
-                          height={112}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <BookOpen className="h-8 w-8 text-muted-foreground/30" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-foreground line-clamp-2">
-                        {book.volumeInfo.title}
-                      </h3>
-                      {book.volumeInfo.authors && (
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {book.volumeInfo.authors.join(', ')}
-                        </p>
-                      )}
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {(book.sourceTrace || []).map((source) => (
-                          <Badge key={`${book.id}-${source}`} variant="secondary" className="text-[10px]">
-                            {source}
-                          </Badge>
-                        ))}
+                    <div className="flex gap-4">
+                      <div className="w-20 h-28 flex-shrink-0 bg-muted rounded overflow-hidden">
+                        {book.volumeInfo.imageLinks?.thumbnail ? (
+                          <Image
+                            src={book.volumeInfo.imageLinks.thumbnail.replace('http://', 'https://')}
+                            alt={book.volumeInfo.title}
+                            width={80}
+                            height={112}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <BookOpen className="h-8 w-8 text-muted-foreground/30" />
+                          </div>
+                        )}
                       </div>
-                      {book.volumeInfo.publisher && (
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Publisher: {book.volumeInfo.publisher}
-                        </p>
-                      )}
-                      {book.volumeInfo.publishedDate && (
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {book.volumeInfo.publishedDate}
-                        </p>
-                      )}
-                      {book.volumeInfo.description && (
-                        <p className="text-sm text-muted-foreground mt-2 line-clamp-2">
-                          {book.volumeInfo.description}
-                        </p>
-                      )}
-                      {display.sourceSummary && (
-                        <p className="text-xs text-muted-foreground mt-2">
-                          Sources: {display.sourceSummary}
-                        </p>
-                      )}
-                      {(book.sourceTrace || []).length > 1 && (
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Found in {(book.sourceTrace || []).length} sources
-                        </p>
-                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-medium text-foreground line-clamp-2">
+                            {book.volumeInfo.title}
+                          </h3>
+                          {book.source && (
+                            <Badge variant="secondary" className="text-[10px]">{book.source}</Badge>
+                          )}
+                        </div>
+                        {book.volumeInfo.authors && (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {book.volumeInfo.authors.join(', ')}
+                            {primaryYear ? ` • ${primaryYear}` : ''}
+                          </p>
+                        )}
+                        {book.volumeInfo.description && (
+                          <p className="text-sm text-muted-foreground mt-2 line-clamp-2">
+                            {book.volumeInfo.description}
+                          </p>
+                        )}
+                        {display.sourceSummary && (
+                          <p className="text-xs text-muted-foreground mt-2">
+                            Sources: {display.sourceSummary}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex-shrink-0 flex flex-col gap-2 items-end">
+                        <Button
+                          variant={isAdded ? 'secondary' : 'default'}
+                          size="sm"
+                          disabled={isAdding || isAdded}
+                          onClick={() => handleAddBook(book)}
+                          className="gap-2"
+                        >
+                          {isAdding ? (
+                            <Spinner className="h-4 w-4" />
+                          ) : isAdded ? (
+                            <Check className="h-4 w-4" />
+                          ) : null}
+                          {isAdded ? 'Added' : isAdding ? 'Adding...' : 'Add'}
+                        </Button>
+                        {editions.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => toggleGroup(groupKey)}
+                          >
+                            {isExpanded ? 'Hide editions' : `More editions (${editions.length})`}
+                          </Button>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex-shrink-0">
-                      <Button
-                        variant={isAdded ? 'secondary' : 'default'}
-                        size="sm"
-                        disabled={isAdding || isAdded}
-                        onClick={() => handleAddBook(book)}
-                        className="gap-2"
-                      >
-                        {isAdding ? (
-                          <Spinner className="h-4 w-4" />
-                        ) : isAdded ? (
-                          <Check className="h-4 w-4" />
-                        ) : null}
-                        {isAdded ? 'Added' : isAdding ? 'Adding...' : 'Add'}
-                      </Button>
-                    </div>
+                    {isExpanded && editions.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-border space-y-2">
+                        {editions.map((edition) => {
+                          const editionAdded = addedBooks.has(edition.id)
+                          const editionAdding = addingBookId === edition.id
+                          const editionYear = edition.volumeInfo.publishedDate?.match(/\d{4}/)?.[0]
+                          return (
+                            <div key={edition.id} className="flex items-center justify-between rounded-md bg-muted/40 p-2 gap-3">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium truncate">{edition.volumeInfo.title}</p>
+                                <p className="text-xs text-muted-foreground truncate">
+                                  {(edition.volumeInfo.authors || []).join(', ') || 'Unknown author'}
+                                  {editionYear ? ` • ${editionYear}` : ''}
+                                </p>
+                              </div>
+                              <Button
+                                variant={editionAdded ? 'secondary' : 'outline'}
+                                size="sm"
+                                disabled={editionAdding || editionAdded}
+                                onClick={() => handleAddBook(edition)}
+                              >
+                                {editionAdded ? 'Added' : editionAdding ? 'Adding...' : 'Add'}
+                              </Button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )
               })}
