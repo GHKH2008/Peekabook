@@ -23,15 +23,20 @@ export default function AddBookPage() {
   const [searchPending, setSearchPending] = useState(false)
   const [searchResults, setSearchResults] = useState<EnglishBook[]>([])
   const [addingBookKey, setAddingBookKey] = useState<string | null>(null)
+  const [searchMessage, setSearchMessage] = useState<string | null>(null)
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
     setSearchPending(true)
     setError(null)
+    setSearchMessage(null)
 
     try {
       const results = await searchBooks(searchQuery)
       setSearchResults(results)
+      if (results.length === 0) {
+        setSearchMessage('No results found for this query.')
+      }
     } catch {
       setError('Book search failed. Please try again.')
     } finally {
@@ -42,6 +47,7 @@ export default function AddBookPage() {
   async function handleAddSearchedBook(book: EnglishBook) {
     setAddingBookKey(book.sourceEditionId ?? book.title)
     setError(null)
+    setSearchMessage(null)
 
     try {
       const result = await addSearchedBookToLibrary({
@@ -63,6 +69,8 @@ export default function AddBookPage() {
 
       if (!result.success) {
         setError(result.error || 'Failed to add searched book')
+      } else {
+        setSearchMessage(`Added “${book.title}” to your library.`)
       }
     } catch {
       setError('Failed to add searched book. Please try again.')
@@ -131,31 +139,49 @@ export default function AddBookPage() {
           <div className="space-y-3">
             {searchResults.map((book) => {
               const key = book.sourceEditionId ?? `${book.title}-${book.authors[0] ?? ''}`
+              const shortSummary = book.summary ? `${book.summary.slice(0, 180)}${book.summary.length > 180 ? '…' : ''}` : null
 
               return (
                 <div key={key} className="rounded-lg border p-3 space-y-2">
-                  <p className="font-semibold">{book.title}</p>
-                  {book.series && <p className="text-sm text-muted-foreground">Series: {book.series}</p>}
-                  {!!book.authors.length && (
-                    <p className="text-sm text-muted-foreground">By {book.authors.join(', ')}</p>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    {book.publisher || 'Unknown publisher'} • {book.publishedDate || 'Unknown date'}
-                  </p>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={addingBookKey === key}
-                    onClick={() => handleAddSearchedBook(book)}
-                  >
-                    {addingBookKey === key ? 'Adding...' : 'Add to Library'}
-                  </Button>
+                  <div className="flex gap-3">
+                    <div className="w-16 h-24 rounded-md border bg-muted/30 overflow-hidden shrink-0">
+                      {book.cover ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={book.cover} alt={`${book.title} cover`} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-[10px] text-muted-foreground px-1 text-center">
+                          No cover
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <p className="font-semibold">{book.title}</p>
+                      {book.series && <p className="text-sm text-muted-foreground">Series: {book.series}</p>}
+                      {!!book.authors.length && (
+                        <p className="text-sm text-muted-foreground">By {book.authors.join(', ')}</p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        {book.publisher || 'Unknown publisher'} • {book.publishedDate || 'Unknown date'}
+                      </p>
+                      {shortSummary && <p className="text-xs text-muted-foreground">{shortSummary}</p>}
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={addingBookKey === key}
+                        onClick={() => handleAddSearchedBook(book)}
+                      >
+                        {addingBookKey === key ? 'Adding...' : 'Add to Library'}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               )
             })}
             {!searchPending && searchResults.length === 0 && (
               <p className="text-sm text-muted-foreground">No English search results yet. Try an English title.</p>
             )}
+            {searchMessage && <p className="text-sm text-emerald-600 dark:text-emerald-400">{searchMessage}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
           </div>
         </CardContent>
       </Card>
@@ -229,9 +255,6 @@ export default function AddBookPage() {
                   />
                 </Field>
               </FieldGroup>
-
-              {error && <p className="text-sm text-destructive">{error}</p>}
-
               <Button type="submit" disabled={customPending || !customTitle.trim()}>
                 {customPending ? 'Adding...' : 'Add Book'}
               </Button>

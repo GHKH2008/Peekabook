@@ -79,40 +79,76 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
     return { success: false, error: 'A matching book already exists in your library' }
   }
 
-  const result = await sql`
-    INSERT INTO books (
-      user_id,
-      title,
-      authors,
-      summary,
-      genres,
-      isbn,
-      isbn_13,
-      language,
-      cover_url,
-      publisher,
-      published_date,
-      page_count,
-      source_refs,
-      source_trace
-    ) VALUES (
-      ${user.id},
-      ${title},
-      ${authors.length ? authors : null},
-      ${data.summary?.trim() || null},
-      ${data.genres?.length ? data.genres : null},
-      ${data.isbn?.trim() || null},
-      ${data.isbn13?.trim() || null},
-      ${data.language?.trim() || null},
-      ${data.cover?.trim() || null},
-      ${data.publisher?.trim() || null},
-      ${data.publishedDate?.trim() || null},
-      ${data.pageCount || null},
-      ${data.sourceRefs ? JSON.stringify(data.sourceRefs) : null}::jsonb,
-      ${data.sourceTrace?.length ? data.sourceTrace : null}
-    )
-    RETURNING id
-  `
+  let result: Array<{ id: number }> = []
+
+  try {
+    result = await sql`
+      INSERT INTO books (
+        user_id,
+        title,
+        authors,
+        summary,
+        genres,
+        isbn,
+        isbn_13,
+        language,
+        cover_url,
+        publisher,
+        published_date,
+        page_count,
+        source_refs,
+        source_trace
+      ) VALUES (
+        ${user.id},
+        ${title},
+        ${authors.length ? authors : null},
+        ${data.summary?.trim() || null},
+        ${data.genres?.length ? data.genres : null},
+        ${data.isbn?.trim() || null},
+        ${data.isbn13?.trim() || null},
+        ${data.language?.trim() || null},
+        ${data.cover?.trim() || null},
+        ${data.publisher?.trim() || null},
+        ${data.publishedDate?.trim() || null},
+        ${data.pageCount || null},
+        ${data.sourceRefs ? JSON.stringify(data.sourceRefs) : null}::jsonb,
+        ${data.sourceTrace?.length ? data.sourceTrace : null}
+      )
+      RETURNING id
+    `
+  } catch {
+    // Backward compatibility for databases that do not yet include source metadata columns.
+    result = await sql`
+      INSERT INTO books (
+        user_id,
+        title,
+        authors,
+        summary,
+        genres,
+        isbn,
+        isbn_13,
+        language,
+        cover_url,
+        publisher,
+        published_date,
+        page_count
+      ) VALUES (
+        ${user.id},
+        ${title},
+        ${authors.length ? authors : null},
+        ${data.summary?.trim() || null},
+        ${data.genres?.length ? data.genres : null},
+        ${data.isbn?.trim() || null},
+        ${data.isbn13?.trim() || null},
+        ${data.language?.trim() || null},
+        ${data.cover?.trim() || null},
+        ${data.publisher?.trim() || null},
+        ${data.publishedDate?.trim() || null},
+        ${data.pageCount || null}
+      )
+      RETURNING id
+    `
+  }
 
   revalidatePath('/library')
   revalidatePath('/dashboard')
