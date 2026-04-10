@@ -4,7 +4,7 @@ import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
 import { revalidatePath } from 'next/cache'
 import { searchBooksSequential } from '@/lib/book-search/orchestrator'
-import type { EnglishBookEdition, EnglishBookGroup } from '@/lib/book-search/types'
+import type { EnglishBook } from '@/lib/book-search/types'
 
 export type BookActionResult = {
   success: boolean
@@ -67,7 +67,7 @@ function cleanPageCount(value?: number | null): number | null {
   return normalized > 0 ? normalized : null
 }
 
-export async function searchBooks(query: string): Promise<EnglishBookGroup[]> {
+export async function searchBooks(query: string): Promise<EnglishBook[]> {
   await requireAuth()
 
   const trimmed = query.trim()
