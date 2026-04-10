@@ -38,6 +38,7 @@ export type EnglishBook = {
 
 export type EnglishBookCandidate = {
   title: string
+  series?: string
   authors: string[]
   cover?: string
   language?: string
