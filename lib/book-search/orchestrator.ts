@@ -1,8 +1,13 @@
-import { mergeMissingFields } from './english-utils'
+import { detectBookLanguage } from './language'
+import {
+  hardDedupeEnglishBooks,
+  mergeMissingFields,
+} from './english-utils'
+import { enrichFromExtras } from './providers/extras'
 import { enrichFromGoogle } from './providers/google'
 import { enrichFromOpenLibrary } from './providers/open-library'
-import { enrichAmazonEdition, searchAmazonEnglishEditions } from './providers/amazon'
-import type { EnglishBookEdition, EnglishBookGroup } from './types'
+import { enrichAmazonCandidate, searchAmazonEnglishCandidates } from './providers/amazon'
+import type { EnglishBook } from './types'
 
 function cleanString(value?: string | null): string | undefined {
   if (typeof value !== 'string') return undefined
@@ -19,7 +24,11 @@ function cleanPageCount(value?: number | null): number | undefined {
   return Math.floor(value)
 }
 
-function normalizeEdition(book: EnglishBookEdition): EnglishBookEdition {
+function isWeakBook(book: EnglishBook): boolean {
+  return !cleanString(book.publisher) || !cleanPageCount(book.pageCount)
+}
+
+function normalizeBook(book: EnglishBook): EnglishBook {
   return {
     ...book,
     title: cleanString(book.title) || book.title,
@@ -38,96 +47,63 @@ function normalizeEdition(book: EnglishBookEdition): EnglishBookEdition {
     publisher: cleanString(book.publisher),
     publishedDate: cleanString(book.publishedDate),
     pageCount: cleanPageCount(book.pageCount),
-    formatLabel: cleanString(book.formatLabel),
-    narrator: cleanString(book.narrator),
-    edition: cleanString(book.edition),
     sourceTrace: Array.isArray(book.sourceTrace)
       ? book.sourceTrace.map((s) => s.trim()).filter(Boolean)
       : [],
   }
 }
 
-function needsEnrichment(book: EnglishBookEdition): boolean {
-  return !book.publisher || !book.pageCount
-}
+export async function searchBooksSequential(query: string): Promise<EnglishBook[]> {
+  const language = detectBookLanguage(query)
+  if (language !== 'en') return []
 
-function editionKey(book: EnglishBookEdition): string {
-  return [
-    book.title.toLowerCase(),
-    (book.series || '').toLowerCase(),
-    (book.formatLabel || book.format || 'unknown').toLowerCase(),
-    (book.isbn13 || '').toLowerCase(),
-    (book.isbn || '').toLowerCase(),
-    (book.publishedDate || '').toLowerCase(),
-    (book.sourceRefs?.amazonAsin || '').toLowerCase(),
-  ].join('|')
-}
+  const amazonCandidates = await searchAmazonEnglishCandidates(query, 20)
 
-function dedupeEditions(books: EnglishBookEdition[]): EnglishBookEdition[] {
-  const seen = new Set<string>()
-  const result: EnglishBookEdition[] = []
+  const normalizedCandidates: EnglishBook[] = amazonCandidates.map((candidate) =>
+    normalizeBook({
+      title: candidate.title,
+      series: candidate.series,
+      authors: candidate.authors,
+      summary: undefined,
+      genres: [],
+      isbn: undefined,
+      isbn13: undefined,
+      language: candidate.language,
+      cover: candidate.cover,
+      publisher: undefined,
+      publishedDate: undefined,
+      pageCount: undefined,
+      sourceEditionId: candidate.sourceEditionId,
+      sourceRefs: candidate.sourceRefs,
+      sourceTrace: ['amazon-search'],
+    })
+  )
 
-  for (const raw of books) {
-    const book = normalizeEdition(raw)
-    const key = editionKey(book)
-    if (seen.has(key)) continue
-    seen.add(key)
-    result.push(book)
-  }
+  const enrichedSequentially: EnglishBook[] = []
 
-  return result
-}
+  for (const candidate of normalizedCandidates) {
+    let current = candidate
 
-function groupBooks(editions: EnglishBookEdition[]): EnglishBookGroup[] {
-  const groups = new Map<string, EnglishBookGroup>()
+    const amazonEnrichment = await enrichAmazonCandidate(current)
+    current = normalizeBook(mergeMissingFields(current, amazonEnrichment, 'amazon-detail'))
 
-  for (const edition of editions) {
-    const key = `${edition.title.toLowerCase()}|${(edition.series || '').toLowerCase()}|${edition.authors.join('|').toLowerCase()}`
-
-    if (!groups.has(key)) {
-      groups.set(key, {
-        groupId: key,
-        title: edition.title,
-        series: edition.series,
-        authors: edition.authors,
-        cover: edition.cover,
-        summary: edition.summary,
-        editions: [],
-      })
+    if (isWeakBook(current)) {
+      const googleEnrichment = await enrichFromGoogle(current)
+      current = normalizeBook(mergeMissingFields(current, googleEnrichment, 'google'))
     }
 
-    const group = groups.get(key)!
-    if (!group.cover && edition.cover) group.cover = edition.cover
-    if (!group.summary && edition.summary) group.summary = edition.summary
-    group.editions.push(edition)
-  }
-
-  return Array.from(groups.values())
-}
-
-export async function searchBooksSequential(query: string): Promise<EnglishBookGroup[]> {
-  const amazonEditions = await searchAmazonEnglishEditions(query, 20)
-
-  const enriched: EnglishBookEdition[] = []
-
-  for (const edition of amazonEditions) {
-    let current = normalizeEdition(edition)
-
-    const amazonDetails = await enrichAmazonEdition(current)
-    current = normalizeEdition(mergeMissingFields(current, amazonDetails, 'amazon-detail'))
-
-    if (needsEnrichment(current)) {
-      const google = await enrichFromGoogle(current)
-      current = normalizeEdition(mergeMissingFields(current, google, 'google'))
+    if (isWeakBook(current)) {
+      const openLibraryEnrichment = await enrichFromOpenLibrary(current)
+      current = normalizeBook(mergeMissingFields(current, openLibraryEnrichment, 'open-library'))
     }
 
-    if (needsEnrichment(current)) {
-      const openLibrary = await enrichFromOpenLibrary(current)
-      current = normalizeEdition(mergeMissingFields(current, openLibrary, 'open-library'))
+    if (isWeakBook(current)) {
+      const extrasEnrichment = await enrichFromExtras(current)
+      current = normalizeBook(mergeMissingFields(current, extrasEnrichment, 'extras'))
     }
 
-    enriched.push(current)
+    enrichedSequentially.push(current)
   }
 
-  return groupBooks(dedupeEditions(enriched))
+  return hardDedupeEnglishBooks(enrichedSequentially).slice(0, 20)
 }
