@@ -9,10 +9,19 @@ import { Plus, Search, X } from 'lucide-react'
 import { addCustomBookToLibrary, addSearchedBookToLibrary, searchBooks } from '@/app/actions/books'
 import type { EnglishBook } from '@/lib/book-search/types'
 
+function prettifyFormat(label?: string, fallback?: string) {
+  const value = (label || fallback || '').trim()
+  if (!value) return 'Unknown format'
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
 export default function AddBookPage() {
   const [error, setError] = useState<string | null>(null)
   const [customPending, setCustomPending] = useState(false)
   const [customTitle, setCustomTitle] = useState('')
+  const [customSeries, setCustomSeries] = useState('')
   const [customAuthor, setCustomAuthor] = useState('')
   const [customSummary, setCustomSummary] = useState('')
   const [customPublisher, setCustomPublisher] = useState('')
@@ -47,7 +56,10 @@ export default function AddBookPage() {
   }
 
   function getBookKey(book: EnglishBook) {
-    return book.sourceEditionId ?? `${book.title}-${book.authors[0] ?? ''}`
+    return (
+      book.sourceEditionId ??
+      `${book.title}-${book.formatLabel ?? book.format ?? 'unknown'}-${book.isbn13 ?? book.isbn ?? book.authors[0] ?? ''}`
+    )
   }
 
   async function handleAddSearchedBook(book: EnglishBook) {
@@ -95,6 +107,7 @@ export default function AddBookPage() {
     try {
       const result = await addCustomBookToLibrary({
         title: customTitle,
+        series: customSeries,
         author: customAuthor,
         summary: customSummary,
         publisher: customPublisher,
@@ -103,6 +116,7 @@ export default function AddBookPage() {
 
       if (result.success) {
         setCustomTitle('')
+        setCustomSeries('')
         setCustomAuthor('')
         setCustomSummary('')
         setCustomPublisher('')
@@ -118,17 +132,19 @@ export default function AddBookPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
+    <div className="space-y-6 max-w-4xl mx-auto">
       <div>
         <h1 className="text-2xl md:text-3xl font-bold text-foreground">Add a Book</h1>
-        <p className="text-muted-foreground">English search uses Amazon first, then Google and Open Library only for missing fields.</p>
+        <p className="text-muted-foreground">
+          English search keeps separate formats and editions so you can choose the exact book you want.
+        </p>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Search (English)</CardTitle>
           <CardDescription>
-            Sequential pipeline: Amazon candidates first, enrichment second, hard dedupe and edition collapsing.
+            Amazon editions first, then fill missing fields from Google, Open Library, and extras only when needed.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -147,10 +163,12 @@ export default function AddBookPage() {
           <div className="space-y-3">
             {searchResults.map((book) => {
               const key = getBookKey(book)
-              const shortSummary = book.summary ? `${book.summary.slice(0, 180)}${book.summary.length > 180 ? '…' : ''}` : null
+              const shortSummary = book.summary
+                ? `${book.summary.slice(0, 180)}${book.summary.length > 180 ? '…' : ''}`
+                : null
 
               return (
-                <div key={key} className="rounded-lg border p-3 space-y-2">
+                <div key={key} className="rounded-lg border p-3 space-y-3">
                   <div className="flex gap-3">
                     <div className="w-16 h-24 rounded-md border bg-muted/30 overflow-hidden shrink-0">
                       {book.cover ? (
@@ -162,16 +180,44 @@ export default function AddBookPage() {
                         </div>
                       )}
                     </div>
-                    <div className="space-y-2">
-                      <p className="font-semibold">{book.title}</p>
-                      {book.series && <p className="text-sm text-muted-foreground">Series: {book.series}</p>}
-                      {!!book.authors.length && (
+
+                    <div className="space-y-2 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold">{book.title}</p>
+                        <span className="text-xs rounded-full border px-2 py-0.5 text-muted-foreground">
+                          {prettifyFormat(book.formatLabel, book.format)}
+                        </span>
+                        {book.pageCount ? (
+                          <span className="text-xs rounded-full border px-2 py-0.5 text-muted-foreground">
+                            {book.pageCount} pages
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {book.series ? (
+                        <p className="text-sm text-muted-foreground">Series: {book.series}</p>
+                      ) : null}
+
+                      {!!book.authors.length ? (
                         <p className="text-sm text-muted-foreground">By {book.authors.join(', ')}</p>
-                      )}
+                      ) : null}
+
                       <p className="text-xs text-muted-foreground">
                         {book.publisher || 'Unknown publisher'} • {book.publishedDate || 'Unknown date'}
                       </p>
-                      {shortSummary && <p className="text-xs text-muted-foreground">{shortSummary}</p>}
+
+                      {book.narrator ? (
+                        <p className="text-xs text-muted-foreground">Narrator: {book.narrator}</p>
+                      ) : null}
+
+                      {book.isbn13 ? (
+                        <p className="text-xs text-muted-foreground">ISBN-13: {book.isbn13}</p>
+                      ) : book.isbn ? (
+                        <p className="text-xs text-muted-foreground">ISBN-10: {book.isbn}</p>
+                      ) : null}
+
+                      {shortSummary ? <p className="text-xs text-muted-foreground">{shortSummary}</p> : null}
+
                       <Button
                         type="button"
                         variant="secondary"
@@ -185,9 +231,11 @@ export default function AddBookPage() {
                 </div>
               )
             })}
+
             {!searchPending && searchResults.length === 0 && (
               <p className="text-sm text-muted-foreground">No English search results yet. Try an English title.</p>
             )}
+
             {searchMessage && <p className="text-sm text-emerald-600 dark:text-emerald-400">{searchMessage}</p>}
             {error && <p className="text-sm text-destructive">{error}</p>}
           </div>
@@ -198,9 +246,7 @@ export default function AddBookPage() {
         <CardHeader className="space-y-4">
           <div>
             <CardTitle>Add Manually</CardTitle>
-            <CardDescription>
-              Start from zero and add a book with title, author, summary and more.
-            </CardDescription>
+            <CardDescription>Start from zero and add a book with title, series, author, summary and more.</CardDescription>
           </div>
           <Button
             type="button"
@@ -212,6 +258,7 @@ export default function AddBookPage() {
             {showManualForm ? 'Hide Manual Form' : 'Add Manually'}
           </Button>
         </CardHeader>
+
         {showManualForm && (
           <CardContent>
             <form onSubmit={handleAddCustomBook} className="space-y-4">
@@ -226,6 +273,17 @@ export default function AddBookPage() {
                     required
                   />
                 </Field>
+
+                <Field>
+                  <FieldLabel htmlFor="custom-series">Series</FieldLabel>
+                  <Input
+                    id="custom-series"
+                    value={customSeries}
+                    onChange={(e) => setCustomSeries(e.target.value)}
+                    placeholder="Series name"
+                  />
+                </Field>
+
                 <Field>
                   <FieldLabel htmlFor="custom-author">Author</FieldLabel>
                   <Input
@@ -235,6 +293,7 @@ export default function AddBookPage() {
                     placeholder="Author name"
                   />
                 </Field>
+
                 <Field>
                   <FieldLabel htmlFor="custom-summary">Summary</FieldLabel>
                   <Input
@@ -244,6 +303,7 @@ export default function AddBookPage() {
                     placeholder="Short summary"
                   />
                 </Field>
+
                 <Field>
                   <FieldLabel htmlFor="custom-publisher">Publisher</FieldLabel>
                   <Input
@@ -253,6 +313,7 @@ export default function AddBookPage() {
                     placeholder="Publisher"
                   />
                 </Field>
+
                 <Field>
                   <FieldLabel htmlFor="custom-published-date">Published Date</FieldLabel>
                   <Input
@@ -263,6 +324,7 @@ export default function AddBookPage() {
                   />
                 </Field>
               </FieldGroup>
+
               <Button type="submit" disabled={customPending || !customTitle.trim()}>
                 {customPending ? 'Adding...' : 'Add Book'}
               </Button>
