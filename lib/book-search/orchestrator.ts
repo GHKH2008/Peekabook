@@ -27,7 +27,7 @@ function isWeakEdition(book: EnglishBook): boolean {
   return !publisher || !pageCount
 }
 
-function hardDedupeByEdition(books: EnglishBook[]): EnglishBook[] {
+function dedupeByEdition(books: EnglishBook[]): EnglishBook[] {
   const seen = new Set<string>()
   const result: EnglishBook[] = []
 
@@ -75,6 +75,7 @@ export async function searchBooksSequential(query: string): Promise<EnglishBook[
 
   const baseCandidates: EnglishBook[] = amazonCandidates.map((candidate) => ({
     title: candidate.title,
+    series: candidate.series,
     authors: candidate.authors,
     summary: undefined,
     genres: [],
@@ -130,6 +131,5 @@ export async function searchBooksSequential(query: string): Promise<EnglishBook[
     enrichedSequentially.push(current)
   }
 
-  const deduped = hardDedupeByEdition(enrichedSequentially)
-  return sortBooks(deduped).slice(0, 20)
+  return sortBooks(dedupeByEdition(enrichedSequentially)).slice(0, 20)
 }
