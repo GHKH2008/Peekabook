@@ -4,7 +4,7 @@ import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
 import { revalidatePath } from 'next/cache'
 import { searchBooksSequential } from '@/lib/book-search/orchestrator'
-import type { EnglishBook } from '@/lib/book-search/types'
+import type { EnglishBookEdition, EnglishBookGroup } from '@/lib/book-search/types'
 
 export type BookActionResult = {
   success: boolean
@@ -41,14 +41,23 @@ type SearchBookInput = {
 function cleanString(value?: string | null): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
+  if (!trimmed) return null
+
+  const lowered = trimmed.toLowerCase()
+  if (lowered === 'unknown' || lowered === 'n/a' || lowered === 'not available') {
+    return null
+  }
+
+  return trimmed
 }
 
 function cleanStringArray(values?: string[] | null): string[] | null {
   if (!Array.isArray(values)) return null
+
   const cleaned = values
     .map((value) => (typeof value === 'string' ? value.trim() : ''))
     .filter(Boolean)
+
   return cleaned.length > 0 ? cleaned : null
 }
 
@@ -58,7 +67,7 @@ function cleanPageCount(value?: number | null): number | null {
   return normalized > 0 ? normalized : null
 }
 
-export async function searchBooks(query: string): Promise<EnglishBook[]> {
+export async function searchBooks(query: string): Promise<EnglishBookGroup[]> {
   await requireAuth()
 
   const trimmed = query.trim()
