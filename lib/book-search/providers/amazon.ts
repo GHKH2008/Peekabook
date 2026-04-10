@@ -1,5 +1,17 @@
-import type { EnglishBook, EnglishBookCandidate } from '../types'
+import type { EnglishBook } from '../types'
 import { cleanAuthors } from '../english-utils'
+
+type EnglishBookCandidate = {
+  title: string
+  series?: string
+  authors: string[]
+  cover?: string
+  language?: string
+  sourceEditionId: string
+  sourceRefs: {
+    amazonAsin: string
+  }
+}
 
 const AMAZON_SEARCH_URL = 'https://www.amazon.com/s'
 

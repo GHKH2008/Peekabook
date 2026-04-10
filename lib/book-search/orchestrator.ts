@@ -1,12 +1,7 @@
-import { detectBookLanguage } from './language'
-import {
-  hardDedupeEnglishBooks,
-  mergeMissingFields,
-} from './english-utils'
-import { enrichFromExtras } from './providers/extras'
+import { hardDedupeEnglishBooks, mergeMissingFields } from './english-utils'
 import { enrichFromGoogle } from './providers/google'
+import { searchGoodreadsBooks } from './providers/goodreads'
 import { enrichFromOpenLibrary } from './providers/open-library'
-import { enrichAmazonCandidate, searchAmazonEnglishCandidates } from './providers/amazon'
 import type { EnglishBook } from './types'
 
 function cleanString(value?: string | null): string | undefined {
@@ -14,7 +9,16 @@ function cleanString(value?: string | null): string | undefined {
   const trimmed = value.trim()
   if (!trimmed) return undefined
   const lowered = trimmed.toLowerCase()
-  if (lowered === 'unknown' || lowered === 'n/a' || lowered === 'not available') return undefined
+  if (
+    lowered === 'unknown' ||
+    lowered === 'n/a' ||
+    lowered === 'not available' ||
+    lowered === 'none' ||
+    lowered === 'null' ||
+    lowered === 'undefined'
+  ) {
+    return undefined
+  }
   return trimmed
 }
 
@@ -24,22 +28,14 @@ function cleanPageCount(value?: number | null): number | undefined {
   return Math.floor(value)
 }
 
-function isWeakBook(book: EnglishBook): boolean {
-  return !cleanString(book.publisher) || !cleanPageCount(book.pageCount)
-}
-
 function normalizeBook(book: EnglishBook): EnglishBook {
   return {
     ...book,
     title: cleanString(book.title) || book.title,
     series: cleanString(book.series),
-    authors: Array.isArray(book.authors)
-      ? book.authors.map((a) => a.trim()).filter(Boolean)
-      : [],
+    authors: Array.isArray(book.authors) ? book.authors.map((a) => a.trim()).filter(Boolean) : [],
     summary: cleanString(book.summary),
-    genres: Array.isArray(book.genres)
-      ? book.genres.map((g) => g.trim()).filter(Boolean)
-      : [],
+    genres: Array.isArray(book.genres) ? book.genres.map((g) => g.trim()).filter(Boolean) : [],
     isbn: cleanString(book.isbn),
     isbn13: cleanString(book.isbn13),
     language: cleanString(book.language),
@@ -47,63 +43,44 @@ function normalizeBook(book: EnglishBook): EnglishBook {
     publisher: cleanString(book.publisher),
     publishedDate: cleanString(book.publishedDate),
     pageCount: cleanPageCount(book.pageCount),
-    sourceTrace: Array.isArray(book.sourceTrace)
-      ? book.sourceTrace.map((s) => s.trim()).filter(Boolean)
-      : [],
+    sourceTrace: Array.isArray(book.sourceTrace) ? book.sourceTrace.map((s) => s.trim()).filter(Boolean) : [],
   }
 }
 
+function needsFallbackEnrichment(book: EnglishBook): boolean {
+  return !book.publisher || !book.publishedDate || !book.pageCount || !book.isbn || !book.isbn13 || !book.language || !book.summary
+}
+
 export async function searchBooksSequential(query: string): Promise<EnglishBook[]> {
-  const language = detectBookLanguage(query)
-  if (language !== 'en') return []
+  let goodreadsResults: EnglishBook[] = []
 
-  const amazonCandidates = await searchAmazonEnglishCandidates(query, 20)
+  try {
+    goodreadsResults = await searchGoodreadsBooks(query, 20)
+  } catch (error) {
+    console.error('goodreads search pipeline crashed:', { query, error })
+    return []
+  }
 
-  const normalizedCandidates: EnglishBook[] = amazonCandidates.map((candidate) =>
-    normalizeBook({
-      title: candidate.title,
-      series: candidate.series,
-      authors: candidate.authors,
-      summary: undefined,
-      genres: [],
-      isbn: undefined,
-      isbn13: undefined,
-      language: candidate.language,
-      cover: candidate.cover,
-      publisher: undefined,
-      publishedDate: undefined,
-      pageCount: undefined,
-      sourceEditionId: candidate.sourceEditionId,
-      sourceRefs: candidate.sourceRefs,
-      sourceTrace: ['amazon-search'],
-    })
-  )
+  if (!goodreadsResults.length) return []
 
-  const enrichedSequentially: EnglishBook[] = []
+  const normalized = goodreadsResults.map((book) => normalizeBook(book))
+  const enriched: EnglishBook[] = []
 
-  for (const candidate of normalizedCandidates) {
-    let current = candidate
+  for (const book of normalized) {
+    let current = book
 
-    const amazonEnrichment = await enrichAmazonCandidate(current)
-    current = normalizeBook(mergeMissingFields(current, amazonEnrichment, 'amazon-detail'))
-
-    if (isWeakBook(current)) {
+    if (needsFallbackEnrichment(current)) {
       const googleEnrichment = await enrichFromGoogle(current)
       current = normalizeBook(mergeMissingFields(current, googleEnrichment, 'google'))
     }
 
-    if (isWeakBook(current)) {
+    if (needsFallbackEnrichment(current)) {
       const openLibraryEnrichment = await enrichFromOpenLibrary(current)
       current = normalizeBook(mergeMissingFields(current, openLibraryEnrichment, 'open-library'))
     }
 
-    if (isWeakBook(current)) {
-      const extrasEnrichment = await enrichFromExtras(current)
-      current = normalizeBook(mergeMissingFields(current, extrasEnrichment, 'extras'))
-    }
-
-    enrichedSequentially.push(current)
+    enriched.push(current)
   }
 
-  return hardDedupeEnglishBooks(enrichedSequentially).slice(0, 20)
+  return hardDedupeEnglishBooks(enriched).slice(0, 20)
 }

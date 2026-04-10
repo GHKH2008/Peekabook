@@ -43,7 +43,6 @@ export async function enrichFromGoogle(book: EnglishBook): Promise<Partial<Engli
   const url = new URL('https://www.googleapis.com/books/v1/volumes')
   url.searchParams.set('q', queryParts.join(' '))
   url.searchParams.set('maxResults', '5')
-  url.searchParams.set('langRestrict', 'en')
 
   const response = await fetch(url.toString(), { cache: 'no-store' })
   if (!response.ok) return {}

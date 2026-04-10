@@ -128,15 +128,15 @@ export default function AddBookPage() {
       <div>
         <h1 className="text-2xl md:text-3xl font-bold text-foreground">Add a Book</h1>
         <p className="text-muted-foreground">
-          Search Amazon first and show the first book results.
+          Search Goodreads first and show the first 20 results.
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Search (English)</CardTitle>
+          <CardTitle>Search (Goodreads)</CardTitle>
           <CardDescription>
-            Amazon results first, then fill missing fields from other sources only when needed.
+            Goodreads results first for any language, then fill missing fields from Google Books and Open Library when needed.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -144,7 +144,7 @@ export default function AddBookPage() {
             <Input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by title (English)"
+              placeholder="Search by title or author (any language)"
             />
             <Button type="submit" disabled={!searchQuery.trim() || searchPending} className="gap-2">
               <Search className="h-4 w-4" />
@@ -217,7 +217,7 @@ export default function AddBookPage() {
             })}
 
             {!searchPending && searchResults.length === 0 && (
-              <p className="text-sm text-muted-foreground">No English search results yet. Try an English title.</p>
+              <p className="text-sm text-muted-foreground">No search results yet. Try any title or author.</p>
             )}
 
             {searchMessage && <p className="text-sm text-emerald-600 dark:text-emerald-400">{searchMessage}</p>}
