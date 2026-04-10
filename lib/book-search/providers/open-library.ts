@@ -54,15 +54,13 @@ export async function enrichFromOpenLibrary(book: EnglishBook): Promise<Partial<
   const isbn13 = doc.isbn?.find((candidate) => candidate.replace(/[^0-9]/g, '').length === 13)
   const isbn10 = doc.isbn?.find((candidate) => candidate.replace(/[^0-9Xx]/g, '').length === 10)
   const cover = doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg` : undefined
-  const isEnglish = doc.language?.some((code) => code.toLowerCase().includes('eng'))
-
   return {
     title: doc.title,
     authors: cleanAuthors(doc.author_name),
     genres: doc.subject?.slice(0, 10) ?? [],
     isbn: isbn10,
     isbn13,
-    language: isEnglish ? 'en' : undefined,
+    language: doc.language?.[0],
     cover,
     publisher: doc.publisher?.[0],
     publishedDate: doc.first_publish_year ? String(doc.first_publish_year) : undefined,

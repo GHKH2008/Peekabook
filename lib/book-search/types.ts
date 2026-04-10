@@ -15,24 +15,14 @@ export type EnglishBook = {
   pageCount?: number
   sourceEditionId?: string
   sourceRefs?: {
+    goodreadsBookId?: string
+    goodreadsWorkId?: string
     amazonAsin?: string
     googleVolumeId?: string
     openLibraryWorkKey?: string
     openLibraryEditionKey?: string
   }
   sourceTrace?: string[]
-}
-
-export type EnglishBookCandidate = {
-  title: string
-  series?: string
-  authors: string[]
-  cover?: string
-  language?: string
-  sourceEditionId: string
-  sourceRefs: {
-    amazonAsin: string
-  }
 }
 
 export const ENGLISH_VISIBLE_FIELDS: Array<keyof EnglishBook> = [
