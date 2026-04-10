@@ -69,6 +69,14 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
   const authors = (data.authors ?? []).map((a) => a.trim()).filter(Boolean)
   const genres = (data.genres ?? []).map((g) => g.trim()).filter(Boolean)
   const sourceTrace = (data.sourceTrace ?? []).map((s) => s.trim()).filter(Boolean)
+  const summary = data.summary?.trim() || null
+  const isbn = data.isbn?.trim() || null
+  const isbn13 = data.isbn13?.trim() || null
+  const language = data.language?.trim() || null
+  const cover = data.cover?.trim() || null
+  const publisher = data.publisher?.trim() || null
+  const publishedDate = data.publishedDate?.trim() || null
+  const pageCount = typeof data.pageCount === 'number' ? data.pageCount : null
   const primaryAuthor = authors[0]?.toLowerCase() ?? null
 
   console.log('addSearchedBookToLibrary payload:', {
@@ -76,35 +84,56 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
     title,
     authors,
     genres,
-    isbn: data.isbn ?? null,
-    isbn13: data.isbn13 ?? null,
-    language: data.language ?? null,
-    cover: data.cover ?? null,
-    publisher: data.publisher ?? null,
-    publishedDate: data.publishedDate ?? null,
-    pageCount: data.pageCount ?? null,
+    summary,
+    isbn,
+    isbn13,
+    language,
+    cover,
+    publisher,
+    publishedDate,
+    pageCount,
     sourceRefs: data.sourceRefs ?? null,
     sourceTrace,
   })
 
   try {
-    const existing = await sql`
-      SELECT id
-      FROM books
-      WHERE user_id = ${user.id}
-        AND (
-          (${data.isbn13 || null} IS NOT NULL AND isbn_13 = ${data.isbn13 || null})
-          OR (${data.isbn || null} IS NOT NULL AND isbn = ${data.isbn || null})
-          OR (
-            lower(title) = ${title.toLowerCase()}
-            AND (
-              (${primaryAuthor} IS NULL AND (authors IS NULL OR array_length(authors, 1) = 0))
-              OR (${primaryAuthor} IS NOT NULL AND lower(COALESCE(authors[1], '')) = ${primaryAuthor})
-            )
-          )
-        )
-      LIMIT 1
-    `
+    let existing: Array<{ id: number }> = []
+
+    if (isbn13) {
+      existing = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND isbn_13 = ${isbn13}
+        LIMIT 1
+      `
+    } else if (isbn) {
+      existing = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND isbn = ${isbn}
+        LIMIT 1
+      `
+    } else if (primaryAuthor) {
+      existing = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND lower(title) = ${title.toLowerCase()}
+          AND lower(COALESCE(authors[1], '')) = ${primaryAuthor}
+        LIMIT 1
+      `
+    } else {
+      existing = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND lower(title) = ${title.toLowerCase()}
+          AND (authors IS NULL OR array_length(authors, 1) = 0)
+        LIMIT 1
+      `
+    }
 
     console.log('addSearchedBookToLibrary existing matches:', existing)
 
@@ -116,8 +145,8 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
       userId: user.id,
       title,
       primaryAuthor,
-      isbn: data.isbn ?? null,
-      isbn13: data.isbn13 ?? null,
+      isbn,
+      isbn13,
       error,
     })
     return { success: false, error: 'Duplicate check failed. Check server logs.' }
@@ -146,15 +175,15 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
         ${user.id},
         ${title},
         ${authors.length ? authors : null},
-        ${data.summary?.trim() || null},
+        ${summary},
         ${genres.length ? genres : null},
-        ${data.isbn?.trim() || null},
-        ${data.isbn13?.trim() || null},
-        ${data.language?.trim() || null},
-        ${data.cover?.trim() || null},
-        ${data.publisher?.trim() || null},
-        ${data.publishedDate?.trim() || null},
-        ${typeof data.pageCount === 'number' ? data.pageCount : null},
+        ${isbn},
+        ${isbn13},
+        ${language},
+        ${cover},
+        ${publisher},
+        ${publishedDate},
+        ${pageCount},
         ${data.sourceRefs ? JSON.stringify(data.sourceRefs) : null}::jsonb,
         ${sourceTrace.length ? sourceTrace : null}
       )
@@ -168,12 +197,12 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
       title,
       authors,
       genres,
-      isbn: data.isbn ?? null,
-      isbn13: data.isbn13 ?? null,
-      language: data.language ?? null,
-      publisher: data.publisher ?? null,
-      publishedDate: data.publishedDate ?? null,
-      pageCount: data.pageCount ?? null,
+      isbn,
+      isbn13,
+      language,
+      publisher,
+      publishedDate,
+      pageCount,
       sourceRefs: data.sourceRefs ?? null,
       sourceTrace,
       error,
@@ -198,15 +227,15 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
           ${user.id},
           ${title},
           ${authors.length ? authors : null},
-          ${data.summary?.trim() || null},
+          ${summary},
           ${genres.length ? genres : null},
-          ${data.isbn?.trim() || null},
-          ${data.isbn13?.trim() || null},
-          ${data.language?.trim() || null},
-          ${data.cover?.trim() || null},
-          ${data.publisher?.trim() || null},
-          ${data.publishedDate?.trim() || null},
-          ${typeof data.pageCount === 'number' ? data.pageCount : null}
+          ${isbn},
+          ${isbn13},
+          ${language},
+          ${cover},
+          ${publisher},
+          ${publishedDate},
+          ${pageCount}
         )
         RETURNING id
       `
@@ -218,13 +247,13 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
         title,
         authors,
         genres,
-        isbn: data.isbn ?? null,
-        isbn13: data.isbn13 ?? null,
-        language: data.language ?? null,
-        cover: data.cover ?? null,
-        publisher: data.publisher ?? null,
-        publishedDate: data.publishedDate ?? null,
-        pageCount: data.pageCount ?? null,
+        isbn,
+        isbn13,
+        language,
+        cover,
+        publisher,
+        publishedDate,
+        pageCount,
         fallbackError,
       })
       return { success: false, error: 'DB insert failed. Check server logs.' }
@@ -243,9 +272,10 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
 
   const title = data.title.trim()
   const author = data.author?.trim()
-  const summary = data.summary?.trim()
-  const publisher = data.publisher?.trim()
-  const publishedDate = data.publishedDate?.trim()
+  const summary = data.summary?.trim() || null
+  const publisher = data.publisher?.trim() || null
+  const publishedDate = data.publishedDate?.trim() || null
+  const normalizedAuthor = author ? author.toLowerCase() : null
 
   console.log('addCustomBookToLibrary payload:', {
     userId: user.id,
@@ -261,17 +291,27 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
   }
 
   try {
-    const existing = await sql`
-      SELECT id
-      FROM books
-      WHERE user_id = ${user.id}
-        AND lower(title) = ${title.toLowerCase()}
-        AND (
-          (${author ? author.toLowerCase() : null} IS NULL AND (authors IS NULL OR array_length(authors, 1) = 0))
-          OR (${author ? author.toLowerCase() : null} IS NOT NULL AND lower(COALESCE(authors[1], '')) = ${author ? author.toLowerCase() : ''})
-        )
-      LIMIT 1
-    `
+    let existing: Array<{ id: number }> = []
+
+    if (normalizedAuthor) {
+      existing = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND lower(title) = ${title.toLowerCase()}
+          AND lower(COALESCE(authors[1], '')) = ${normalizedAuthor}
+        LIMIT 1
+      `
+    } else {
+      existing = await sql`
+        SELECT id
+        FROM books
+        WHERE user_id = ${user.id}
+          AND lower(title) = ${title.toLowerCase()}
+          AND (authors IS NULL OR array_length(authors, 1) = 0)
+        LIMIT 1
+      `
+    }
 
     console.log('addCustomBookToLibrary existing matches:', existing)
 
@@ -301,9 +341,9 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
         ${user.id},
         ${title},
         ${author ? [author] : null},
-        ${summary || null},
-        ${publisher || null},
-        ${publishedDate || null}
+        ${summary},
+        ${publisher},
+        ${publishedDate}
       )
       RETURNING id
     `
