@@ -18,6 +18,7 @@ type CustomBookInput = {
   summary?: string
   publisher?: string
   publishedDate?: string
+  series?: string
 }
 
 type SearchBookInput = {
@@ -37,64 +38,56 @@ type SearchBookInput = {
   sourceTrace?: string[]
 }
 
+function cleanString(value?: string | null): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function cleanStringArray(values?: string[] | null): string[] | null {
+  if (!Array.isArray(values)) return null
+  const cleaned = values
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter(Boolean)
+  return cleaned.length > 0 ? cleaned : null
+}
+
+function cleanPageCount(value?: number | null): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  const normalized = Math.floor(value)
+  return normalized > 0 ? normalized : null
+}
+
 export async function searchBooks(query: string): Promise<EnglishBook[]> {
-  const user = await requireAuth()
-  console.log('searchBooks auth user:', user)
+  await requireAuth()
 
   const trimmed = query.trim()
   if (!trimmed) return []
 
-  try {
-    const results = await searchBooksSequential(trimmed)
-    console.log('searchBooks results count:', results.length)
-    return results
-  } catch (error) {
-    console.error('searchBooks failed:', {
-      query: trimmed,
-      error,
-    })
-    throw error
-  }
+  return searchBooksSequential(trimmed)
 }
 
 export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<BookActionResult> {
   const user = await requireAuth()
-  console.log('addSearchedBookToLibrary auth user:', user)
 
-  const title = data.title.trim()
+  const title = cleanString(data.title)
   if (!title) {
     return { success: false, error: 'Title is required' }
   }
 
-  const authors = (data.authors ?? []).map((a) => a.trim()).filter(Boolean)
-  const genres = (data.genres ?? []).map((g) => g.trim()).filter(Boolean)
-  const sourceTrace = (data.sourceTrace ?? []).map((s) => s.trim()).filter(Boolean)
-  const summary = data.summary?.trim() || null
-  const isbn = data.isbn?.trim() || null
-  const isbn13 = data.isbn13?.trim() || null
-  const language = data.language?.trim() || null
-  const cover = data.cover?.trim() || null
-  const publisher = data.publisher?.trim() || null
-  const publishedDate = data.publishedDate?.trim() || null
-  const pageCount = typeof data.pageCount === 'number' ? data.pageCount : null
-  const primaryAuthor = authors[0]?.toLowerCase() ?? null
-
-  console.log('addSearchedBookToLibrary payload:', {
-    userId: user.id,
-    title,
-    authors,
-    genres,
-    summary,
-    isbn,
-    isbn13,
-    language,
-    cover,
-    publisher,
-    publishedDate,
-    pageCount,
-    sourceRefs: data.sourceRefs ?? null,
-    sourceTrace,
-  })
+  const series = cleanString(data.series)
+  const authors = cleanStringArray(data.authors)
+  const genres = cleanStringArray(data.genres)
+  const sourceTrace = cleanStringArray(data.sourceTrace)
+  const summary = cleanString(data.summary)
+  const isbn = cleanString(data.isbn)
+  const isbn13 = cleanString(data.isbn13)
+  const language = cleanString(data.language)
+  const cover = cleanString(data.cover)
+  const publisher = cleanString(data.publisher)
+  const publishedDate = cleanString(data.publishedDate)
+  const pageCount = cleanPageCount(data.pageCount)
+  const primaryAuthor = authors?.[0]?.toLowerCase() ?? null
 
   try {
     let existing: Array<{ id: number }> = []
@@ -135,8 +128,6 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
       `
     }
 
-    console.log('addSearchedBookToLibrary existing matches:', existing)
-
     if (existing.length > 0) {
       return { success: false, error: 'A matching book already exists in your library' }
     }
@@ -159,6 +150,7 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
       INSERT INTO books (
         user_id,
         title,
+        series,
         authors,
         summary,
         genres,
@@ -174,9 +166,10 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
       ) VALUES (
         ${user.id},
         ${title},
-        ${authors.length ? authors : null},
+        ${series},
+        ${authors},
         ${summary},
-        ${genres.length ? genres : null},
+        ${genres},
         ${isbn},
         ${isbn13},
         ${language},
@@ -185,16 +178,15 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
         ${publishedDate},
         ${pageCount},
         ${data.sourceRefs ? JSON.stringify(data.sourceRefs) : null}::jsonb,
-        ${sourceTrace.length ? sourceTrace : null}
+        ${sourceTrace}
       )
       RETURNING id
     `
-
-    console.log('addSearchedBookToLibrary insert with source metadata succeeded:', result)
   } catch (error) {
     console.error('addSearchedBookToLibrary insert with source metadata failed:', {
       userId: user.id,
       title,
+      series,
       authors,
       genres,
       isbn,
@@ -213,6 +205,7 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
         INSERT INTO books (
           user_id,
           title,
+          series,
           authors,
           summary,
           genres,
@@ -226,9 +219,10 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
         ) VALUES (
           ${user.id},
           ${title},
-          ${authors.length ? authors : null},
+          ${series},
+          ${authors},
           ${summary},
-          ${genres.length ? genres : null},
+          ${genres},
           ${isbn},
           ${isbn13},
           ${language},
@@ -239,12 +233,11 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
         )
         RETURNING id
       `
-
-      console.log('addSearchedBookToLibrary fallback insert succeeded:', result)
     } catch (fallbackError) {
       console.error('addSearchedBookToLibrary fallback insert failed:', {
         userId: user.id,
         title,
+        series,
         authors,
         genres,
         isbn,
@@ -268,23 +261,14 @@ export async function addSearchedBookToLibrary(data: SearchBookInput): Promise<B
 
 export async function addCustomBookToLibrary(data: CustomBookInput): Promise<BookActionResult> {
   const user = await requireAuth()
-  console.log('addCustomBookToLibrary auth user:', user)
 
-  const title = data.title.trim()
-  const author = data.author?.trim()
-  const summary = data.summary?.trim() || null
-  const publisher = data.publisher?.trim() || null
-  const publishedDate = data.publishedDate?.trim() || null
+  const title = cleanString(data.title)
+  const author = cleanString(data.author)
+  const summary = cleanString(data.summary)
+  const publisher = cleanString(data.publisher)
+  const publishedDate = cleanString(data.publishedDate)
+  const series = cleanString(data.series)
   const normalizedAuthor = author ? author.toLowerCase() : null
-
-  console.log('addCustomBookToLibrary payload:', {
-    userId: user.id,
-    title,
-    author,
-    summary,
-    publisher,
-    publishedDate,
-  })
 
   if (!title) {
     return { success: false, error: 'Title is required' }
@@ -313,8 +297,6 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
       `
     }
 
-    console.log('addCustomBookToLibrary existing matches:', existing)
-
     if (existing.length > 0) {
       return { success: false, error: 'A matching title/author already exists in your library' }
     }
@@ -333,6 +315,7 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
       INSERT INTO books (
         user_id,
         title,
+        series,
         authors,
         summary,
         publisher,
@@ -340,6 +323,7 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
       ) VALUES (
         ${user.id},
         ${title},
+        ${series},
         ${author ? [author] : null},
         ${summary},
         ${publisher},
@@ -347,8 +331,6 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
       )
       RETURNING id
     `
-
-    console.log('addCustomBookToLibrary insert succeeded:', result)
 
     revalidatePath('/library')
     revalidatePath('/dashboard')
@@ -358,6 +340,7 @@ export async function addCustomBookToLibrary(data: CustomBookInput): Promise<Boo
     console.error('addCustomBookToLibrary insert failed:', {
       userId: user.id,
       title,
+      series,
       author,
       summary,
       publisher,
@@ -377,7 +360,6 @@ export async function updateBook(
   }
 ): Promise<BookActionResult> {
   const user = await requireAuth()
-  console.log('updateBook auth user:', user, 'bookId:', bookId, 'data:', data)
 
   try {
     const book = await sql`
@@ -391,9 +373,11 @@ export async function updateBook(
     if (data.visibility !== undefined) {
       await sql`UPDATE books SET visibility = ${data.visibility} WHERE id = ${bookId}`
     }
+
     if (data.availability !== undefined) {
       await sql`UPDATE books SET availability = ${data.availability} WHERE id = ${bookId}`
     }
+
     if (data.is_adult !== undefined) {
       await sql`UPDATE books SET is_adult = ${data.is_adult} WHERE id = ${bookId}`
     }
@@ -417,7 +401,6 @@ export async function updateBook(
 
 export async function deleteBook(bookId: number): Promise<BookActionResult> {
   const user = await requireAuth()
-  console.log('deleteBook auth user:', user, 'bookId:', bookId)
 
   try {
     const book = await sql`
