@@ -3,13 +3,14 @@ export type BookLanguage = 'en' | 'other'
 export type EnglishBookFormat =
   | 'paperback'
   | 'hardcover'
-  | 'kindle'
-  | 'audiobook'
   | 'mass_market_paperback'
   | 'audio_cd'
+  | 'audiobook'
+  | 'kindle'
+  | 'ebook'
   | 'unknown'
 
-export type EnglishBook = {
+export type EnglishBookEdition = {
   title: string
   series?: string
   authors: string[]
@@ -36,35 +37,23 @@ export type EnglishBook = {
   sourceTrace?: string[]
 }
 
-export type EnglishBookCandidate = {
+export type EnglishBookGroup = {
+  groupId: string
   title: string
   series?: string
   authors: string[]
   cover?: string
-  language?: string
-  format?: EnglishBookFormat
-  formatLabel?: string
-  sourceEditionId: string
-  sourceRefs: {
-    amazonAsin: string
-  }
+  summary?: string
+  editions: EnglishBookEdition[]
 }
 
-export const ENGLISH_VISIBLE_FIELDS: Array<keyof EnglishBook> = [
-  'title',
-  'series',
-  'authors',
-  'summary',
-  'genres',
-  'isbn',
-  'isbn13',
-  'language',
-  'cover',
-  'publisher',
-  'publishedDate',
-  'pageCount',
-  'format',
-  'formatLabel',
-  'narrator',
-  'edition',
+export const LOANABLE_FORMATS: EnglishBookFormat[] = [
+  'paperback',
+  'hardcover',
+  'mass_market_paperback',
+  'audio_cd',
 ]
+
+export function isLoanableFormat(format?: EnglishBookFormat): boolean {
+  return !!format && LOANABLE_FORMATS.includes(format)
+}
