@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS books (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   google_books_id VARCHAR(100),
   title VARCHAR(500) NOT NULL,
-  authors TEXT[], -- Array of author names
+  authors TEXT[],
   summary TEXT,
   genres TEXT[],
   isbn VARCHAR(20),
@@ -30,14 +30,15 @@ CREATE TABLE IF NOT EXISTS books (
   cover_url TEXT,
   publisher VARCHAR(255),
   published_date VARCHAR(50),
+  series VARCHAR(255),
   page_count INTEGER,
   is_adult BOOLEAN DEFAULT FALSE,
+  visibility VARCHAR(20) DEFAULT 'public',
+  availability VARCHAR(20) DEFAULT 'available',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
   source_refs JSONB,
-  source_trace TEXT[],
-  visibility VARCHAR(20) DEFAULT 'public' CHECK (visibility IN ('public', 'friends', 'private')),
-  availability VARCHAR(20) DEFAULT 'available' CHECK (availability IN ('available', 'requested', 'loaned', 'unavailable')),
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  source_trace TEXT[]
 );
 
 -- Friendships table (bidirectional friend relationships)
