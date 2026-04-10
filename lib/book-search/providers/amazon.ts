@@ -46,19 +46,22 @@ function inferFormat(label?: string): EnglishBookFormat {
 function normalizeTitle(rawTitle: string): { title: string; series?: string } {
   const cleaned = rawTitle.replace(/\s+/g, ' ').trim()
 
-  const bookOfMatch = cleaned.match(/^(.*?)\s*\(([^,]+),\s*(\d+)\)\s*$/i)
-  if (bookOfMatch) {
+  const numberedSeriesMatch = cleaned.match(/^(.*?)\s*\(([^,]+),\s*(\d+)\)\s*$/i)
+  if (numberedSeriesMatch) {
     return {
-      title: bookOfMatch[1].trim(),
-      series: bookOfMatch[2].trim(),
+      title: numberedSeriesMatch[1].trim(),
+      series: numberedSeriesMatch[2].trim(),
     }
   }
 
-  const bareSeriesMatch = cleaned.match(/^(.*?)\s*\(([^()]+)\)\s*$/)
-  if (bareSeriesMatch) {
-    const left = bareSeriesMatch[1].trim()
-    const right = bareSeriesMatch[2].trim()
-    if (/series|book|volume|vol\./i.test(right) || /^[A-Z][A-Za-z0-9' -]+$/.test(right)) {
+  const cradleStyleMatch = cleaned.match(/^(.*?)\s*\(([^()]+)\)\s*$/)
+  if (cradleStyleMatch) {
+    const left = cradleStyleMatch[1].trim()
+    const right = cradleStyleMatch[2].trim()
+    if (
+      /series|book|volume|vol\./i.test(right) ||
+      /^[A-Z][A-Za-z0-9' -]+$/.test(right)
+    ) {
       return {
         title: left,
         series: right,
@@ -69,15 +72,67 @@ function normalizeTitle(rawTitle: string): { title: string; series?: string } {
   return { title: cleaned }
 }
 
-function parseProductDetails(html: string): Partial<EnglishBook> {
-  const text = html.replace(/\r/g, '')
-  const getValue = (label: string): string | undefined => {
-    const pattern = new RegExp(`${label}\\s*[:：]\\s*</span>\\s*([^<]+)`, 'i')
-    const match = text.match(pattern)
-    return cleanString(stripTags(match?.[1] || ''))
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+}
+
+function scoreCandidate(query: string, title: string, authors: string[]): number {
+  const queryTokens = tokenize(query)
+  const haystack = `${title} ${authors.join(' ')}`.toLowerCase()
+
+  let score = 0
+  for (const token of queryTokens) {
+    if (haystack.includes(token)) score += 1
   }
 
-  const publisherLineMatch = text.match(/Publisher[\s\S]{0,200}?<\/span>\s*([^<]+)/i)
+  if (title.toLowerCase() === query.trim().toLowerCase()) score += 4
+  if (title.toLowerCase().includes(query.trim().toLowerCase())) score += 2
+
+  return score
+}
+
+function looksLikeBookishResult(blockText: string): boolean {
+  return /paperback|hardcover|kindle|audiobook|audio cd|print length|isbn|publisher|publication date|narrator|will wight|author/i.test(
+    blockText
+  )
+}
+
+function looksLikeGarbageTitle(title: string): boolean {
+  const value = title.trim().toLowerCase()
+  if (!value) return true
+  return (
+    value === 'add to cart' ||
+    value === 'shop now' ||
+    value === 'visit the store' ||
+    value.startsWith('create your own') ||
+    value.includes('website')
+  )
+}
+
+function parseSearchCards(html: string): Array<{ asin: string; block: string }> {
+  const cards: Array<{ asin: string; block: string }> = []
+  const regex = /<div[^>]+data-asin="([A-Z0-9]{10})"[^>]*data-component-type="s-search-result"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/gi
+
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(html)) !== null) {
+    cards.push({
+      asin: match[1],
+      block: match[0],
+    })
+  }
+
+  return cards
+}
+
+function parseProductDetails(html: string): Partial<EnglishBook> {
+  const text = html.replace(/\r/g, '')
+
+  const publisherLineMatch = text.match(/Publisher[\s\S]{0,220}?<\/span>\s*([^<]+)/i)
   let publisher: string | undefined
   let publishedDate: string | undefined
 
@@ -90,37 +145,36 @@ function parseProductDetails(html: string): Partial<EnglishBook> {
     }
   }
 
-  const explicitPublishedDate = getValue('Publication date')
-  const language = getValue('Language')
-  const isbn10 = getValue('ISBN-10')
-  const isbn13 = getValue('ISBN-13')
-  const narrator = getValue('Narrator')
-  const printLengthLine = getValue('Print length')
-  const listeningLengthLine = getValue('Listening Length')
-  const bookOfLine = getValue('Book 1 of') || getValue('Book')
+  const publicationDateMatch = text.match(/Publication date[\s\S]{0,120}?<\/span>\s*([^<]+)/i)
+  const languageMatch = text.match(/Language[\s\S]{0,120}?<\/span>\s*([^<]+)/i)
+  const isbn10Match = text.match(/ISBN-10[\s\S]{0,120}?<\/span>\s*([^<]+)/i)
+  const isbn13Match = text.match(/ISBN-13[\s\S]{0,120}?<\/span>\s*([^<]+)/i)
+  const narratorMatch = text.match(/Narrator[\s\S]{0,120}?<\/span>\s*([^<]+)/i)
+  const printLengthMatch = text.match(/Print length[\s\S]{0,120}?<\/span>\s*([^<]+)/i)
+  const listeningLengthMatch = text.match(/Listening Length[\s\S]{0,120}?<\/span>\s*([^<]+)/i)
+  const bookOfMatch = text.match(/Book\s+\d+\s+of\s+\d+[\s\S]{0,80}?<\/span>\s*([^<]+)/i)
 
   let pageCount: number | undefined
-  const printLengthMatch = printLengthLine?.match(/(\d+)/)
-  if (printLengthMatch) {
-    pageCount = cleanPageCount(Number(printLengthMatch[1]))
+  const pageDigits = stripTags(printLengthMatch?.[1] || '').match(/(\d+)/)
+  if (pageDigits) {
+    pageCount = cleanPageCount(Number(pageDigits[1]))
   }
 
   let series: string | undefined
-  if (bookOfLine) {
-    const cleaned = cleanString(bookOfLine)
-    if (cleaned) series = cleaned
+  if (bookOfMatch?.[1]) {
+    series = cleanString(stripTags(bookOfMatch[1]))
   }
 
   return {
     publisher,
-    publishedDate: explicitPublishedDate || publishedDate,
-    language,
-    isbn: isbn10,
-    isbn13,
+    publishedDate: cleanString(stripTags(publicationDateMatch?.[1] || '')) || publishedDate,
+    language: cleanString(stripTags(languageMatch?.[1] || '')),
+    isbn: cleanString(stripTags(isbn10Match?.[1] || '')),
+    isbn13: cleanString(stripTags(isbn13Match?.[1] || '')),
     pageCount,
-    narrator: cleanString(narrator),
+    narrator: cleanString(stripTags(narratorMatch?.[1] || '')),
     series,
-    edition: cleanString(listeningLengthLine),
+    edition: cleanString(stripTags(listeningLengthMatch?.[1] || '')),
   }
 }
 
@@ -143,25 +197,20 @@ export async function searchAmazonEnglishCandidates(query: string, limit = 20): 
   if (!response.ok) return []
 
   const html = await response.text()
-  const itemRegex = /<div[^>]+data-asin="([A-Z0-9]{10})"[\s\S]*?<\/div>\s*<\/div>/g
-
-  const candidates: EnglishBookCandidate[] = []
+  const cards = parseSearchCards(html)
+  const candidates: Array<EnglishBookCandidate & { _score: number }> = []
   const seen = new Set<string>()
-  let match: RegExpExecArray | null
 
-  while ((match = itemRegex.exec(html)) !== null && candidates.length < limit) {
-    const asin = match[1]
-    if (!asin || seen.has(asin)) continue
+  for (const { asin, block } of cards) {
+    if (!asin) continue
+    if (/sponsored/i.test(block)) continue
 
-    const block = match[0]
-    if (/Sponsored|sponsored/i.test(block)) continue
-
-    const titleMatch =
-      block.match(/<h2[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>[\s\S]*?<\/h2>/i) ||
-      block.match(/aria-label="([^"]+)"/i)
-
+    const titleMatch = block.match(/<h2[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>[\s\S]*?<\/h2>/i)
     const rawTitle = stripTags(titleMatch?.[1] || '')
-    if (!rawTitle) continue
+    if (!rawTitle || looksLikeGarbageTitle(rawTitle)) continue
+
+    const blockText = stripTags(block)
+    if (!looksLikeBookishResult(blockText)) continue
 
     const titleMeta = normalizeTitle(rawTitle)
 
@@ -170,18 +219,20 @@ export async function searchAmazonEnglishCandidates(query: string, limit = 20): 
     ).map((m) => stripTags(m[1]))
     const authors = cleanAuthors(authorMatches).slice(0, 3)
 
-    const coverMatch = block.match(/<img[^>]+src="([^"]+)"[^>]*class="s-image"/i)
-
-    const formatMatch =
-      block.match(/(?:Paperback|Hardcover|Kindle|Audiobook|Audio CD|Mass Market Paperback)/i)
+    const coverMatch = block.match(/<img[^>]+class="s-image"[^>]+src="([^"]+)"/i)
+    const formatMatch = blockText.match(/Paperback|Hardcover|Kindle|Audiobook|Audio CD|Mass Market Paperback/i)
     const formatLabel = cleanString(formatMatch?.[0])
 
-    const key = `${asin}:${formatLabel || 'unknown'}:${titleMeta.title.toLowerCase()}`
-    if (seen.has(key)) continue
-    seen.add(key)
+    const score = scoreCandidate(query, titleMeta.title, authors)
+    if (score <= 0) continue
+
+    const dedupeKey = `${asin}:${formatLabel || 'unknown'}:${titleMeta.title.toLowerCase()}`
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
 
     candidates.push({
       title: titleMeta.title,
+      series: titleMeta.series,
       authors,
       cover: coverMatch?.[1],
       language: 'en',
@@ -191,10 +242,14 @@ export async function searchAmazonEnglishCandidates(query: string, limit = 20): 
       sourceRefs: {
         amazonAsin: asin,
       },
+      _score: score,
     })
   }
 
   return candidates
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit)
+    .map(({ _score, ...candidate }) => candidate)
 }
 
 export async function enrichAmazonEdition(candidate: EnglishBook): Promise<Partial<EnglishBook>> {
@@ -216,7 +271,6 @@ export async function enrichAmazonEdition(candidate: EnglishBook): Promise<Parti
 
   const html = await response.text()
   const parsed = parseProductDetails(html)
-
   const titleMeta = normalizeTitle(candidate.title)
 
   return {
