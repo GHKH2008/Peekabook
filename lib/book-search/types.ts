@@ -1,5 +1,14 @@
 export type BookLanguage = 'en' | 'other'
 
+export type EnglishBookFormat =
+  | 'paperback'
+  | 'hardcover'
+  | 'kindle'
+  | 'audiobook'
+  | 'mass_market_paperback'
+  | 'audio_cd'
+  | 'unknown'
+
 export type EnglishBook = {
   title: string
   series?: string
@@ -13,6 +22,10 @@ export type EnglishBook = {
   publisher?: string
   publishedDate?: string
   pageCount?: number
+  format?: EnglishBookFormat
+  formatLabel?: string
+  narrator?: string
+  edition?: string
   sourceEditionId?: string
   sourceRefs?: {
     amazonAsin?: string
@@ -28,6 +41,8 @@ export type EnglishBookCandidate = {
   authors: string[]
   cover?: string
   language?: string
+  format?: EnglishBookFormat
+  formatLabel?: string
   sourceEditionId: string
   sourceRefs: {
     amazonAsin: string
@@ -47,4 +62,8 @@ export const ENGLISH_VISIBLE_FIELDS: Array<keyof EnglishBook> = [
   'publisher',
   'publishedDate',
   'pageCount',
+  'format',
+  'formatLabel',
+  'narrator',
+  'edition',
 ]
