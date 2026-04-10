@@ -30,6 +30,7 @@ export type Book = {
   cover_url: string | null
   publisher: string | null
   published_date: string | null
+  series: string | null
   page_count: number | null
   is_adult: boolean
   visibility: 'public' | 'friends' | 'private'
