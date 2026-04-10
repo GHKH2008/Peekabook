@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Field, FieldLabel, FieldGroup } from '@/components/ui/field'
 import { Plus, Search, X } from 'lucide-react'
 import { addCustomBookToLibrary, addSearchedBookToLibrary, searchBooks } from '@/app/actions/books'
-import type { EnglishBook } from '@/lib/book-search/types'
+import type { EnglishBookEdition, EnglishBookGroup } from '@/lib/book-search/types'
 
 function prettifyFormat(label?: string, fallback?: string) {
   const value = (label || fallback || '').trim()
@@ -15,6 +15,13 @@ function prettifyFormat(label?: string, fallback?: string) {
   return value
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
+function getEditionKey(book: EnglishBookEdition) {
+  return (
+    book.sourceEditionId ??
+    `${book.title}-${book.formatLabel ?? book.format ?? 'unknown'}-${book.isbn13 ?? book.isbn ?? ''}-${book.publishedDate ?? ''}`
+  )
 }
 
 export default function AddBookPage() {
@@ -30,7 +37,7 @@ export default function AddBookPage() {
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchPending, setSearchPending] = useState(false)
-  const [searchResults, setSearchResults] = useState<EnglishBook[]>([])
+  const [searchResults, setSearchResults] = useState<EnglishBookGroup[]>([])
   const [addingBookKey, setAddingBookKey] = useState<string | null>(null)
   const [addedBookKeys, setAddedBookKeys] = useState<Set<string>>(new Set())
   const [searchMessage, setSearchMessage] = useState<string | null>(null)
@@ -55,15 +62,8 @@ export default function AddBookPage() {
     }
   }
 
-  function getBookKey(book: EnglishBook) {
-    return (
-      book.sourceEditionId ??
-      `${book.title}-${book.formatLabel ?? book.format ?? 'unknown'}-${book.isbn13 ?? book.isbn ?? book.authors[0] ?? ''}`
-    )
-  }
-
-  async function handleAddSearchedBook(book: EnglishBook) {
-    const key = getBookKey(book)
+  async function handleAddSearchedBook(book: EnglishBookEdition) {
+    const key = getEditionKey(book)
     setAddingBookKey(key)
     setError(null)
     setSearchMessage(null)
@@ -136,7 +136,7 @@ export default function AddBookPage() {
       <div>
         <h1 className="text-2xl md:text-3xl font-bold text-foreground">Add a Book</h1>
         <p className="text-muted-foreground">
-          English search keeps separate formats and editions so you can choose the exact book you want.
+          Search Amazon first, then choose a physical format or edition to add.
         </p>
       </div>
 
@@ -144,7 +144,7 @@ export default function AddBookPage() {
         <CardHeader>
           <CardTitle>Search (English)</CardTitle>
           <CardDescription>
-            Amazon editions first, then fill missing fields from Google, Open Library, and extras only when needed.
+            Results are grouped by book. Audiobooks and ebooks are excluded.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -160,20 +160,19 @@ export default function AddBookPage() {
             </Button>
           </form>
 
-          <div className="space-y-3">
-            {searchResults.map((book) => {
-              const key = getBookKey(book)
-              const shortSummary = book.summary
-                ? `${book.summary.slice(0, 180)}${book.summary.length > 180 ? '…' : ''}`
+          <div className="space-y-4">
+            {searchResults.map((group) => {
+              const shortSummary = group.summary
+                ? `${group.summary.slice(0, 180)}${group.summary.length > 180 ? '…' : ''}`
                 : null
 
               return (
-                <div key={key} className="rounded-lg border p-3 space-y-3">
+                <div key={group.groupId} className="rounded-lg border p-4 space-y-3">
                   <div className="flex gap-3">
                     <div className="w-16 h-24 rounded-md border bg-muted/30 overflow-hidden shrink-0">
-                      {book.cover ? (
+                      {group.cover ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={book.cover} alt={`${book.title} cover`} className="w-full h-full object-cover" />
+                        <img src={group.cover} alt={`${group.title} cover`} className="w-full h-full object-cover" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center text-[10px] text-muted-foreground px-1 text-center">
                           No cover
@@ -182,50 +181,64 @@ export default function AddBookPage() {
                     </div>
 
                     <div className="space-y-2 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-semibold">{book.title}</p>
-                        <span className="text-xs rounded-full border px-2 py-0.5 text-muted-foreground">
-                          {prettifyFormat(book.formatLabel, book.format)}
-                        </span>
-                        {book.pageCount ? (
-                          <span className="text-xs rounded-full border px-2 py-0.5 text-muted-foreground">
-                            {book.pageCount} pages
-                          </span>
-                        ) : null}
+                      <p className="font-semibold">{group.title}</p>
+
+                      {group.series ? (
+                        <p className="text-sm text-muted-foreground">Series: {group.series}</p>
+                      ) : null}
+
+                      {!!group.authors.length ? (
+                        <p className="text-sm text-muted-foreground">By {group.authors.join(', ')}</p>
+                      ) : null}
+
+                      {shortSummary ? (
+                        <p className="text-xs text-muted-foreground">{shortSummary}</p>
+                      ) : null}
+
+                      <div className="flex flex-wrap gap-2">
+                        {group.editions.map((edition) => {
+                          const editionKey = getEditionKey(edition)
+                          const label = [
+                            prettifyFormat(edition.formatLabel, edition.format),
+                            edition.pageCount ? `${edition.pageCount} pages` : null,
+                            edition.publishedDate || null,
+                          ]
+                            .filter(Boolean)
+                            .join(' • ')
+
+                          return (
+                            <Button
+                              key={editionKey}
+                              type="button"
+                              variant="secondary"
+                              disabled={addingBookKey === editionKey || addedBookKeys.has(editionKey)}
+                              onClick={() => handleAddSearchedBook(edition)}
+                              className="h-auto py-2 px-3"
+                            >
+                              {addingBookKey === editionKey
+                                ? 'Adding...'
+                                : addedBookKeys.has(editionKey)
+                                  ? 'Added'
+                                  : label || 'Add edition'}
+                            </Button>
+                          )
+                        })}
                       </div>
 
-                      {book.series ? (
-                        <p className="text-sm text-muted-foreground">Series: {book.series}</p>
-                      ) : null}
-
-                      {!!book.authors.length ? (
-                        <p className="text-sm text-muted-foreground">By {book.authors.join(', ')}</p>
-                      ) : null}
-
-                      <p className="text-xs text-muted-foreground">
-                        {book.publisher || 'Unknown publisher'} • {book.publishedDate || 'Unknown date'}
-                      </p>
-
-                      {book.narrator ? (
-                        <p className="text-xs text-muted-foreground">Narrator: {book.narrator}</p>
-                      ) : null}
-
-                      {book.isbn13 ? (
-                        <p className="text-xs text-muted-foreground">ISBN-13: {book.isbn13}</p>
-                      ) : book.isbn ? (
-                        <p className="text-xs text-muted-foreground">ISBN-10: {book.isbn}</p>
-                      ) : null}
-
-                      {shortSummary ? <p className="text-xs text-muted-foreground">{shortSummary}</p> : null}
-
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        disabled={addingBookKey === key || addedBookKeys.has(key)}
-                        onClick={() => handleAddSearchedBook(book)}
-                      >
-                        {addingBookKey === key ? 'Adding...' : addedBookKeys.has(key) ? 'Added' : 'Add to Library'}
-                      </Button>
+                      <div className="space-y-1">
+                        {group.editions.map((edition) => {
+                          const editionKey = getEditionKey(edition)
+                          return (
+                            <div key={`${editionKey}-meta`} className="text-xs text-muted-foreground">
+                              <span className="font-medium">
+                                {prettifyFormat(edition.formatLabel, edition.format)}
+                              </span>
+                              {edition.publisher ? ` • ${edition.publisher}` : ''}
+                              {edition.isbn13 ? ` • ISBN-13: ${edition.isbn13}` : edition.isbn ? ` • ISBN-10: ${edition.isbn}` : ''}
+                            </div>
+                          )
+                        })}
+                      </div>
                     </div>
                   </div>
                 </div>
