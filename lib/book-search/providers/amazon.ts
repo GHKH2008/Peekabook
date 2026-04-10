@@ -183,6 +183,8 @@ export async function searchAmazonEnglishEditions(query: string, limit = 16): Pr
   url.searchParams.set('k', query)
   url.searchParams.set('i', 'stripbooks')
 
+  console.log('amazon search url:', url.toString())
+
   const response = await fetch(url.toString(), {
     headers: {
       'user-agent':
@@ -193,10 +195,19 @@ export async function searchAmazonEnglishEditions(query: string, limit = 16): Pr
     cache: 'no-store',
   })
 
-  if (!response.ok) return []
+  console.log('amazon search status:', response.status)
+
+  if (!response.ok) {
+    console.log('amazon search failed')
+    return []
+  }
 
   const html = await response.text()
+  console.log('amazon html length:', html.length)
+  console.log('amazon html preview:', html.slice(0, 1200))
+
   const blocks = getSearchBlocks(html)
+  console.log('amazon search blocks found:', blocks.length)
 
   const results: EnglishBookEdition[] = []
   const seen = new Set<string>()
@@ -205,9 +216,20 @@ export async function searchAmazonEnglishEditions(query: string, limit = 16): Pr
     if (results.length >= limit) break
 
     const edition = extractCardEdition(block)
+
+    console.log('raw parsed edition:', edition)
+
     if (!edition) continue
-    if (!looksRelevantToQuery(query, edition.title, edition.authors)) continue
-    if (!isPhysicalLoanableFormat(edition.format || 'unknown')) continue
+
+    const relevant = looksRelevantToQuery(query, edition.title, edition.authors)
+    console.log('edition relevant:', relevant, edition.title)
+
+    if (!relevant) continue
+
+    const loanable = isPhysicalLoanableFormat(edition.format || 'unknown')
+    console.log('edition loanable:', loanable, edition.format, edition.formatLabel)
+
+    if (!loanable) continue
 
     const key = [
       edition.title.toLowerCase(),
@@ -220,6 +242,8 @@ export async function searchAmazonEnglishEditions(query: string, limit = 16): Pr
     results.push(edition)
   }
 
+  console.log('amazon final editions:', results)
+
   return results
 }
 
@@ -228,6 +252,8 @@ export async function enrichAmazonEdition(edition: EnglishBookEdition): Promise<
   if (!asin) return {}
 
   const url = `https://www.amazon.com/dp/${asin}`
+  console.log('amazon detail url:', url)
+
   const response = await fetch(url, {
     headers: {
       'user-agent':
@@ -238,9 +264,12 @@ export async function enrichAmazonEdition(edition: EnglishBookEdition): Promise<
     cache: 'no-store',
   })
 
+  console.log('amazon detail status:', response.status)
+
   if (!response.ok) return {}
 
   const parsed = parseProductDetails(await response.text())
+  console.log('amazon detail parsed:', parsed)
 
   return {
     publisher: parsed.publisher,
